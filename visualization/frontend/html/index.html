@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no">
+    <title>Geographic Data Visualization Platform</title>
+    
+    <!-- Cesium CSS -->
+    <link href="../Cesium-1.127/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+    
+    <!-- Custom CSS -->
+    <link href="../css/style.css" rel="stylesheet">
+</head>
+<body>
+    <div id="cesiumContainer" class="fullSize"></div>
+    
+    <!-- Speed Legend -->
+    <div class="legend">
+        <div class="legend-title">Speed Legend</div>
+        <div class="legend-item">
+            <div class="legend-color" style="background-color: green;"></div>
+            <div class="legend-text">0-10 km/h</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background-color: yellow;"></div>
+            <div class="legend-text">10-30 km/h</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background-color: orange;"></div>
+            <div class="legend-text">30-50 km/h</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background-color: red;"></div>
+            <div class="legend-text">50+ km/h</div>
+        </div>
+    </div>
+
+    <!-- Control Panel -->
+    <div id="toolbar" class="toolbar">
+        <div class="toolbar-section">
+            <h3>Vehicle Trajectory Visualization</h3>
+        </div>
+        
+        <div class="toolbar-section">
+            <label for="vehicleId">Vehicle ID:</label>
+            <select id="vehicleId">
+                <option value="1" selected>Vehicle 1</option>
+            </select>
+        </div>
+        
+        <div class="toolbar-section">
+            <label for="dataLimit">Data Points Count:</label>
+            <select id="dataLimit">
+                <option value="">All</option>
+                <option value="100">100 points</option>
+                <option value="500">500 points</option>
+                <option value="1000">1000 points</option>
+                <option value="5000">5000 points</option>
+            </select>
+        </div>
+        
+        <div class="toolbar-section">
+            <button id="loadDataBtn" class="btn btn-primary">Load Data</button>
+            <button id="clearDataBtn" class="btn btn-secondary">Clear Data</button>
+        </div>
+        
+        <div class="toolbar-section">
+            <div id="dataInfo" class="data-info">
+                <div id="totalPoints">Total Points: --</div>
+                <div id="timeRange">Time Range: --</div>
+                <div id="speedRange">Speed Range: --</div>
+            </div>
+        </div>
+        
+        <div class="toolbar-section">
+            <div id="status" class="status">
+                <span id="statusText">Ready</span>
+                <div id="loadingSpinner" class="loading-spinner" style="display: none;"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Cesium JS -->
+    <script src="../Cesium-1.127/Build/Cesium/Cesium.js"></script>
+    
+    <!-- Custom JS -->
+    <script src="../js/app.js"></script>
+</body>
+</html>
