@@ -35,66 +35,274 @@
         </div>
     </div>
 
-    <!-- Control Panel -->
-    <div id="toolbar" class="toolbar">
-        <div class="toolbar-section">
-            <h3>Vehicle Trajectory Visualization</h3>
-        </div>
-        
-        <div class="toolbar-section">
-            <label for="vehicleMode">Vehicle Selection:</label>
-            <select id="vehicleMode">
-                <option value="single" selected>Single Vehicle</option>
-                <option value="batch">First N Vehicles</option>
-            </select>
-        </div>
-        
-        <div class="toolbar-section" id="singleVehicleSection">
-            <label for="vehicleId">Vehicle ID:</label>
-            <input type="number" id="vehicleId" value="1" min="1" max="9999" style="width: 80px;">
-        </div>
-        
-        <div class="toolbar-section" id="batchVehicleSection" style="display: none;">
-            <label for="vehicleCount">First N Vehicles:</label>
-            <input type="number" id="vehicleCount" value="3" min="1" max="50" style="width: 80px;">
-        </div>
-        
-        <div class="toolbar-section">
-            <label for="roadId">Road Intersection:</label>
-            <select id="roadId">
-                <option value="A0003" selected>A0003</option>
-                <option value="A0008">A0008</option>
-            </select>
-        </div>
-        
-        <div class="toolbar-section">
-            <label for="dataLimit">Data Points Count:</label>
-            <select id="dataLimit">
-                <option value="">All</option>
-                <option value="100">100 points</option>
-                <option value="500">500 points</option>
-                <option value="1000">1000 points</option>
-                <option value="5000">5000 points</option>
-            </select>
-        </div>
-        
-        <div class="toolbar-section">
-            <button id="loadDataBtn" class="btn btn-primary">Load Data</button>
-            <button id="clearDataBtn" class="btn btn-secondary">Clear Data</button>
-        </div>
-        
-        <div class="toolbar-section">
-            <div id="dataInfo" class="data-info">
-                <div id="totalPoints">Total Points: --</div>
-                <div id="timeRange">Time Range: --</div>
-                <div id="speedRange">Speed Range: --</div>
+    <!-- Control Panels Container -->
+    <div class="panels-container">
+        <!-- Vehicle Trajectory Panel -->
+        <div id="vehiclePanel" class="control-panel">
+            <div class="panel-header" data-panel="vehiclePanel">
+                <h3>Vehicle Trajectory Visualization</h3>
+                <div class="collapse-indicator">−</div>
+            </div>
+            <div class="panel-content">
+            
+            <div class="panel-section">
+                <label for="vehicleMode">Vehicle Selection:</label>
+                <select id="vehicleMode">
+                    <option value="single" selected>Single Vehicle</option>
+                    <option value="batch">First N Vehicles</option>
+                    <option value="time_range">Time Range (All Vehicles)</option>
+                </select>
+            </div>
+            
+            <div class="panel-section" id="singleVehicleSection">
+                <label for="vehicleId">Vehicle ID:</label>
+                <input type="number" id="vehicleId" value="1" min="1" max="9999" style="width: 80px;">
+            </div>
+            
+            <div class="panel-section" id="batchVehicleSection" style="display: none;">
+                <label for="vehicleCount">First N Vehicles:</label>
+                <input type="number" id="vehicleCount" value="3" min="1" max="50" style="width: 80px;">
+                
+                <div style="margin-top: 10px;">
+                    <label for="batchDirection">Direction Filter:</label>
+                    <select id="batchDirection" style="width: 120px;">
+                        <option value="" selected>All Directions</option>
+                        <option value="A1">A1 (N-S Straight)</option>
+                        <option value="A2">A2 (N-S Left Turn)</option>
+                        <option value="A3">A3 (E-W Straight)</option>
+                        <option value="A4">A4 (E-W Left Turn)</option>
+                        <option value="C">C (Right Turns & Other)</option>
+                    </select>
+                </div>
+            </div>
+            
+            <div class="panel-section" id="timeRangeVehicleSection" style="display: none;">
+                <label for="vehicleStartTime">Start Time:</label>
+                <input type="time" id="vehicleStartTime" style="width: 100px;">
+                <label for="vehicleEndTime">End Time:</label>
+                <input type="time" id="vehicleEndTime" style="width: 100px;">
+                <button id="loadVehicleTimeRangeBtn" class="btn btn-small">Load Time Range</button>
+                
+                <div style="margin-top: 10px;">
+                    <label for="timeRangeDirection">Direction Filter:</label>
+                    <select id="timeRangeDirection" style="width: 120px;">
+                        <option value="" selected>All Directions</option>
+                        <option value="A1">A1 (N-S Straight)</option>
+                        <option value="A2">A2 (N-S Left Turn)</option>
+                        <option value="A3">A3 (E-W Straight)</option>
+                        <option value="A4">A4 (E-W Left Turn)</option>
+                        <option value="C">C (Right Turns & Other)</option>
+                    </select>
+                </div>
+                
+                <div id="vehicleTimeRangeInfo" class="time-range-info" style="margin-top: 5px; font-size: 12px; color: #666;">
+                    Click "Load Time Range" to see available time range for selected date
+                </div>
+            </div>
+            
+            <div class="panel-section">
+                <label for="roadId">Road Intersection:</label>
+                <select id="roadId">
+                    <option value="A0003" selected>A0003</option>
+                    <option value="A0008">A0008</option>
+                </select>
+            </div>
+            
+            <div class="panel-section">
+                <label for="dateFilter">Date Filter:</label>
+                <select id="dateFilter">
+                    <option value="" selected>All Dates</option>
+                </select>
+                <button id="loadDatesBtn" class="btn btn-small">Load Dates</button>
+            </div>
+            
+            <div class="panel-section">
+                <label for="dataLimit">Data Points Count:</label>
+                <select id="dataLimit">
+                    <option value="">All</option>
+                    <option value="100">100 points</option>
+                    <option value="500">500 points</option>
+                    <option value="1000">1000 points</option>
+                    <option value="5000">5000 points</option>
+                </select>
+            </div>
+            
+            <div class="panel-section">
+                <button id="loadDataBtn" class="btn btn-primary">Load Data</button>
+                <button id="clearDataBtn" class="btn btn-secondary">Clear Data</button>
+            </div>
+            
+            <div class="panel-section">
+                <div id="dataInfo" class="data-info">
+                    <div id="totalPoints">Total Points: --</div>
+                    <div id="timeRange">Time Range: --</div>
+                    <div id="speedRange">Speed Range: --</div>
+                </div>
+            </div>
+            
+            <div class="panel-section">
+                <div id="status" class="status">
+                    <span id="statusText">Ready</span>
+                    <div id="loadingSpinner" class="loading-spinner" style="display: none;"></div>
+                </div>
+            </div>
             </div>
         </div>
-        
-        <div class="toolbar-section">
-            <div id="status" class="status">
-                <span id="statusText">Ready</span>
-                <div id="loadingSpinner" class="loading-spinner" style="display: none;"></div>
+
+        <!-- Traffic Light Panel -->
+        <div id="trafficPanel" class="control-panel">
+            <div class="panel-header" data-panel="trafficPanel">
+                <h3>Traffic Light Status Query</h3>
+                <div class="collapse-indicator">−</div>
+            </div>
+            <div class="panel-content">
+            
+            <div class="panel-section">
+                <label for="trafficRoadId">Road Intersection:</label>
+                <select id="trafficRoadId">
+                    <option value="A0003" selected>A0003</option>
+                    <option value="A0008">A0008</option>
+                </select>
+            </div>
+            
+            <div class="panel-section">
+                <label for="cycleNum">Cycle Number:</label>
+                <input type="number" id="cycleNum" value="1" min="1" max="50" style="width: 80px;">
+                <button id="loadCyclesBtn" class="btn btn-small">Load Available Cycles</button>
+            </div>
+            
+            <div class="panel-section">
+                <button id="queryTrafficLightBtn" class="btn btn-primary">Query Traffic Light Status</button>
+            </div>
+            
+            <div class="panel-section">
+                <div id="trafficLightStatus" class="traffic-light-status">
+                    <div class="status-message">No data queried yet. Click "Query Traffic Light Status" to view results.</div>
+                </div>
+            </div>
+            
+            <div class="panel-section">
+                <div id="trafficStatus" class="status" style="display: none;">
+                    <span id="trafficStatusText"></span>
+                </div>
+            </div>
+            </div>
+        </div>
+
+        <!-- Speed Analysis Panel -->
+        <div id="speedPanel" class="control-panel">
+            <div class="panel-header" data-panel="speedPanel">
+                <h3>Speed Analysis</h3>
+                <div class="collapse-indicator">−</div>
+            </div>
+            <div class="panel-content">
+            
+            <div class="panel-section">
+                <label for="speedMode">Analysis Mode:</label>
+                <select id="speedMode">
+                    <option value="single" selected>Single Vehicle</option>
+                    <option value="time_range">Time Range (All Vehicles)</option>
+                </select>
+            </div>
+            
+            <div class="panel-section" id="singleSpeedSection">
+                <label for="speedVehicleId">Vehicle ID:</label>
+                <input type="number" id="speedVehicleId" value="1" min="1" max="9999" style="width: 80px;">
+                
+                <div style="margin-top: 10px;">
+                    <label for="singleSpeedDirection">Direction Filter:</label>
+                    <select id="singleSpeedDirection" style="width: 120px;">
+                        <option value="" selected>All Directions</option>
+                        <option value="A1">A1 (N-S Straight)</option>
+                        <option value="A2">A2 (N-S Left Turn)</option>
+                        <option value="A3">A3 (E-W Straight)</option>
+                        <option value="A4">A4 (E-W Left Turn)</option>
+                        <option value="C">C (Right Turns & Other)</option>
+                    </select>
+                </div>
+            </div>
+            
+            <div class="panel-section" id="timeRangeSpeedSection" style="display: none;">
+                <label for="speedStartTime">Start Time:</label>
+                <input type="time" id="speedStartTime" style="width: 100px;">
+                <label for="speedEndTime">End Time:</label>
+                <input type="time" id="speedEndTime" style="width: 100px;">
+                <button id="loadTimeRangeBtn" class="btn btn-small">Load Time Range</button>
+                
+                <div style="margin-top: 10px;">
+                    <label for="timeRangeSpeedDirection">Direction Filter:</label>
+                    <select id="timeRangeSpeedDirection" style="width: 120px;">
+                        <option value="" selected>All Directions</option>
+                        <option value="A1">A1 (N-S Straight)</option>
+                        <option value="A2">A2 (N-S Left Turn)</option>
+                        <option value="A3">A3 (E-W Straight)</option>
+                        <option value="A4">A4 (E-W Left Turn)</option>
+                        <option value="C">C (Right Turns & Other)</option>
+                    </select>
+                </div>
+                
+                <div id="timeRangeInfo" class="time-range-info" style="margin-top: 5px; font-size: 12px; color: #666;">
+                    Click "Load Time Range" to see available time range for selected date
+                </div>
+            </div>
+            
+            <div class="panel-section">
+                <label for="speedRoadId">Road Intersection:</label>
+                <select id="speedRoadId">
+                    <option value="A0003" selected>A0003</option>
+                    <option value="A0008">A0008</option>
+                </select>
+            </div>
+            
+            <div class="panel-section">
+                <label for="speedDate">Date:</label>
+                <select id="speedDate">
+                    <option value="" selected>Select Date</option>
+                </select>
+                <button id="loadSpeedDatesBtn" class="btn btn-small">Load Dates</button>
+            </div>
+            
+            <div class="panel-section">
+                <button id="analyzeSpeedBtn" class="btn btn-primary">Analyze Speed</button>
+            </div>
+            
+            <div class="panel-section">
+                <div id="speedAnalysisStatus" class="speed-analysis-status">
+                    <div class="status-message">Select vehicle(s) and date, then click "Analyze Speed" to view the speed chart.</div>
+                </div>
+            </div>
+            
+            <div class="panel-section">
+                <div id="speedStatus" class="status" style="display: none;">
+                    <span id="speedStatusText"></span>
+                </div>
+            </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Traffic Light Timeline Modal -->
+    <div id="timelineModal" class="timeline-modal" style="display: none !important; visibility: hidden;">
+        <div class="timeline-modal-content">
+            <div class="timeline-modal-header">
+                <h3 id="timelineModalTitle">Traffic Light Timeline</h3>
+                <button id="closeTimelineModal" class="close-btn">&times;</button>
+            </div>
+            <div class="timeline-modal-body">
+                <div id="timelineModalData"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Speed Analysis Modal -->
+    <div id="speedModal" class="speed-modal" style="display: none !important; visibility: hidden;">
+        <div class="speed-modal-content">
+            <div class="speed-modal-header">
+                <h3 id="speedModalTitle">Speed Analysis Chart</h3>
+                <button id="closeSpeedModal" class="close-btn">&times;</button>
+            </div>
+            <div class="speed-modal-body">
+                <div id="speedChartContainer"></div>
             </div>
         </div>
     </div>
