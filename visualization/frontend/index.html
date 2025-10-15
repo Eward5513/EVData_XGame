@@ -189,6 +189,41 @@
             </div>
         </div>
 
+        <!-- Intersection Topology Panel -->
+        <div id="topologyPanel" class="control-panel">
+            <div class="panel-header" data-panel="topologyPanel">
+                <h3>Intersection Topology</h3>
+                <div class="collapse-indicator">−</div>
+            </div>
+            <div class="panel-content">
+            
+            <div class="panel-section">
+                <label for="topologyRoadId">Road Intersection:</label>
+                <select id="topologyRoadId">
+                    <option value="A0003" selected>A0003</option>
+                    <option value="A0008">A0008</option>
+                </select>
+            </div>
+            
+            <div class="panel-section">
+                <button id="loadTopologyBtn" class="btn btn-primary">Load Road Network</button>
+                <button id="clearTopologyBtn" class="btn btn-secondary">Clear Network</button>
+            </div>
+            
+            <div class="panel-section">
+                <div id="topologyInfo" class="topology-info">
+                    <div class="status-message">Click "Load Road Network" to display the intersection topology generated from trajectory analysis.</div>
+                </div>
+            </div>
+            
+            <div class="panel-section">
+                <div id="topologyStatus" class="status" style="display: none;">
+                    <span id="topologyStatusText"></span>
+                </div>
+            </div>
+            </div>
+        </div>
+
         <!-- Speed Analysis Panel -->
         <div id="speedPanel" class="control-panel">
             <div class="panel-header" data-panel="speedPanel">

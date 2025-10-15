@@ -206,6 +206,8 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 self._handle_speed_traffic_lights(params)
             elif path == '/api/speed/time-range':
                 self._handle_speed_time_range(params)
+            elif path == '/api/topology/intersection':
+                self._handle_intersection_topology(params)
             else:
                 self._send_json_response({
                     'status': 'error',
@@ -231,6 +233,7 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 '/api/traffic/status - Get traffic light status for specific cycle',
                 '/api/speed/analysis - Get speed analysis data for specific vehicle or time range',
                 '/api/speed/traffic-lights - Get traffic light data for speed analysis time range',
+                '/api/topology/intersection - Get intersection topology GeoJSON',
                 '/api/speed/time-range - Get available time range for specific date',
                 '/health - Health check'
             ]
@@ -950,6 +953,59 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 return f"{minutes}m"
         except:
             return "Unknown"
+    
+    def _handle_intersection_topology(self, params):
+        """Handle intersection topology endpoint to load GeoJSON road network"""
+        try:
+            road_id = params.get('road_id', 'A0003')
+            
+            # Path to the output directory containing the geojson file
+            topology_file = os.path.join(CSV_BASE_PATH, 'output', 'intersection_topology.geojson')
+            
+            print(f"Loading intersection topology from: {topology_file}")
+            
+            # Check if file exists
+            if not os.path.exists(topology_file):
+                self._send_json_response({
+                    'status': 'error',
+                    'message': f'Topology file not found: {topology_file}',
+                    'hint': 'Please run infer_intersection.py first to generate the topology file'
+                }, 404)
+                return
+            
+            # Read the GeoJSON file
+            with open(topology_file, 'r', encoding='utf-8') as f:
+                geojson_data = json.load(f)
+            
+            # Also load the summary file if available
+            summary_file = os.path.join(CSV_BASE_PATH, 'output', 'summary.json')
+            summary_data = None
+            if os.path.exists(summary_file):
+                with open(summary_file, 'r', encoding='utf-8') as f:
+                    summary_data = json.load(f)
+            
+            response = {
+                'status': 'success',
+                'road_id': road_id,
+                'topology': geojson_data,
+                'summary': summary_data,
+                'file_path': topology_file
+            }
+            
+            print(f"Successfully loaded intersection topology with {len(geojson_data.get('features', []))} features")
+            
+            self._send_json_response(response)
+            
+        except json.JSONDecodeError as e:
+            self._send_json_response({
+                'status': 'error',
+                'message': f'Invalid JSON in topology file: {str(e)}'
+            }, 500)
+        except Exception as e:
+            self._send_json_response({
+                'status': 'error',
+                'message': f'Error loading topology: {str(e)}'
+            }, 500)
     
     def log_message(self, format, *args):
         """Override log message to show custom format"""

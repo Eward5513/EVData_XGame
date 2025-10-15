@@ -4,10 +4,12 @@ class GeoVisualization {
     constructor() {
         this.viewer = null;
         this.dataSource = null;
+        this.topologyDataSource = null;
         this.currentVehicleData = [];
         this.currentTrafficLightData = null;
         this.currentSpeedData = null;
         this.currentSpeedTrafficLights = null;
+        this.currentTopologyData = null;
         this.apiBaseUrl = 'http://127.0.0.1:5000/api';
         
         this.bindEvents();
@@ -39,9 +41,12 @@ class GeoVisualization {
             navigationInstructionsInitiallyVisible: false
         });
 
-        // Create data source
+        // Create data sources
         this.dataSource = new Cesium.CustomDataSource('vehicleTrack');
         this.viewer.dataSources.add(this.dataSource);
+        
+        this.topologyDataSource = new Cesium.CustomDataSource('intersectionTopology');
+        this.viewer.dataSources.add(this.topologyDataSource);
 
         // Set initial view to China region
         this.viewer.camera.setView({
@@ -105,6 +110,11 @@ class GeoVisualization {
         const loadTimeRangeBtn = document.getElementById('loadTimeRangeBtn');
         const closeSpeedModal = document.getElementById('closeSpeedModal');
         const speedModal = document.getElementById('speedModal');
+        
+        // Topology elements
+        const loadTopologyBtn = document.getElementById('loadTopologyBtn');
+        const clearTopologyBtn = document.getElementById('clearTopologyBtn');
+        const topologyRoadIdSelect = document.getElementById('topologyRoadId');
 
         loadDataBtn.addEventListener('click', () => {
             this.loadVehicleData();
@@ -167,6 +177,15 @@ class GeoVisualization {
         // Load time range button
         loadTimeRangeBtn.addEventListener('click', () => {
             this.loadTimeRange();
+        });
+
+        // Topology event listeners
+        loadTopologyBtn.addEventListener('click', () => {
+            this.loadIntersectionTopology();
+        });
+
+        clearTopologyBtn.addEventListener('click', () => {
+            this.clearTopology();
         });
 
         // Timeline modal event listeners
@@ -1606,6 +1625,263 @@ class GeoVisualization {
     showSpeedStatus(message, type = 'info') {
         const statusDiv = document.getElementById('speedStatus');
         const statusText = document.getElementById('speedStatusText');
+        
+        statusText.textContent = message;
+        statusDiv.className = `status ${type}`;
+        statusDiv.style.display = 'block';
+        
+        // Auto-hide after 3 seconds for success/info messages
+        if (type === 'success' || type === 'info') {
+            setTimeout(() => {
+                statusDiv.style.display = 'none';
+            }, 3000);
+        }
+    }
+
+    /**
+     * Load intersection topology from backend
+     */
+    async loadIntersectionTopology() {
+        const roadId = document.getElementById('topologyRoadId').value;
+        
+        this.showTopologyStatus('Loading intersection topology...', 'info');
+        
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/topology/intersection?road_id=${roadId}`);
+            const data = await response.json();
+            
+            if (data.status === 'success') {
+                this.currentTopologyData = data;
+                this.displayTopology(data.topology, data.summary);
+                
+                const featureCount = data.topology.features ? data.topology.features.length : 0;
+                const armCount = data.summary ? data.summary.arms.length : 0;
+                const edgeCount = data.summary ? data.summary.edge_supports.length : 0;
+                
+                this.updateTopologyInfo(data.summary);
+                this.showTopologyStatus(
+                    `Successfully loaded topology: ${armCount} arms, ${edgeCount} movement edges, ${featureCount} features`,
+                    'success'
+                );
+                
+                // Fly to the intersection center if available
+                if (data.topology.features && data.topology.features.length > 0) {
+                    const centerFeature = data.topology.features.find(f => f.properties.kind === 'center');
+                    if (centerFeature && centerFeature.geometry.coordinates) {
+                        const [lon, lat] = centerFeature.geometry.coordinates;
+                        this.viewer.camera.flyTo({
+                            destination: Cesium.Cartesian3.fromDegrees(lon, lat, 500),
+                            duration: 2.0
+                        });
+                    }
+                }
+            } else {
+                this.showTopologyStatus(`Error: ${data.message}`, 'error');
+                if (data.hint) {
+                    console.log('Hint:', data.hint);
+                }
+            }
+        } catch (error) {
+            console.error('Error loading topology:', error);
+            this.showTopologyStatus('Failed to load topology data', 'error');
+        }
+    }
+
+    /**
+     * Display topology on the map
+     */
+    displayTopology(geojson, summary) {
+        // Clear existing topology
+        this.topologyDataSource.entities.removeAll();
+        
+        if (!geojson || !geojson.features) {
+            console.warn('No features in topology data');
+            return;
+        }
+        
+        console.log(`Displaying ${geojson.features.length} topology features`);
+        
+        geojson.features.forEach(feature => {
+            const props = feature.properties || {};
+            const geom = feature.geometry;
+            
+            if (props.kind === 'center') {
+                // Display intersection center as a large point
+                const [lon, lat] = geom.coordinates;
+                this.topologyDataSource.entities.add({
+                    position: Cesium.Cartesian3.fromDegrees(lon, lat),
+                    point: {
+                        pixelSize: 15,
+                        color: Cesium.Color.RED,
+                        outlineColor: Cesium.Color.WHITE,
+                        outlineWidth: 2
+                    },
+                    label: {
+                        text: 'Intersection Center',
+                        font: '14px sans-serif',
+                        fillColor: Cesium.Color.WHITE,
+                        outlineColor: Cesium.Color.BLACK,
+                        outlineWidth: 2,
+                        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                        verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+                        pixelOffset: new Cesium.Cartesian2(0, -20)
+                    },
+                    description: `<h3>Intersection Center</h3><p>Coordinates: ${lon.toFixed(6)}, ${lat.toFixed(6)}</p>`
+                });
+            } else if (props.kind === 'arm_node') {
+                // Display arm nodes
+                const [lon, lat] = geom.coordinates;
+                const armId = props.id;
+                const angleRad = props.angle_rad;
+                const angleDeg = (angleRad * 180 / Math.PI).toFixed(1);
+                
+                this.topologyDataSource.entities.add({
+                    position: Cesium.Cartesian3.fromDegrees(lon, lat),
+                    point: {
+                        pixelSize: 12,
+                        color: Cesium.Color.BLUE,
+                        outlineColor: Cesium.Color.WHITE,
+                        outlineWidth: 2
+                    },
+                    label: {
+                        text: `Arm ${armId}`,
+                        font: '12px sans-serif',
+                        fillColor: Cesium.Color.YELLOW,
+                        outlineColor: Cesium.Color.BLACK,
+                        outlineWidth: 2,
+                        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                        verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+                        pixelOffset: new Cesium.Cartesian2(0, -15)
+                    },
+                    description: `<h3>Arm ${armId}</h3><p>Angle: ${angleDeg}°</p><p>Coordinates: ${lon.toFixed(6)}, ${lat.toFixed(6)}</p>`
+                });
+            } else if (props.kind === 'movement') {
+                // Display movement edges as polylines
+                const coords = geom.coordinates;
+                const positions = coords.map(coord => Cesium.Cartesian3.fromDegrees(coord[0], coord[1]));
+                const weight = props.weight || 1;
+                
+                // Color based on weight (traffic volume)
+                let color = Cesium.Color.GREEN;
+                if (weight > 15) {
+                    color = Cesium.Color.RED;
+                } else if (weight > 10) {
+                    color = Cesium.Color.ORANGE;
+                } else if (weight > 5) {
+                    color = Cesium.Color.YELLOW;
+                }
+                
+                this.topologyDataSource.entities.add({
+                    polyline: {
+                        positions: positions,
+                        width: Math.min(2 + weight * 0.5, 10),
+                        material: color.withAlpha(0.8),
+                        clampToGround: true
+                    },
+                    description: `<h3>Movement Edge</h3><p>From Arm ${props.u} to Arm ${props.v}</p><p>Traffic Volume: ${weight} vehicles</p>`
+                });
+                
+                // Add arrow at the end to show direction
+                if (coords.length >= 2) {
+                    const lastCoord = coords[coords.length - 1];
+                    const secondLastCoord = coords[coords.length - 2];
+                    
+                    // Calculate arrow direction
+                    const dx = lastCoord[0] - secondLastCoord[0];
+                    const dy = lastCoord[1] - secondLastCoord[1];
+                    const heading = Math.atan2(dx, dy);
+                    
+                    this.topologyDataSource.entities.add({
+                        position: Cesium.Cartesian3.fromDegrees(lastCoord[0], lastCoord[1]),
+                        billboard: {
+                            image: this.createArrowCanvas(color),
+                            scale: 0.5,
+                            rotation: -heading,
+                            alignedAxis: Cesium.Cartesian3.UNIT_Z
+                        }
+                    });
+                }
+            }
+        });
+        
+        console.log('Topology display completed');
+    }
+
+    /**
+     * Create arrow canvas for direction indication
+     */
+    createArrowCanvas(color) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 32;
+        canvas.height = 32;
+        const ctx = canvas.getContext('2d');
+        
+        // Draw arrow
+        ctx.fillStyle = color.toCssColorString();
+        ctx.beginPath();
+        ctx.moveTo(16, 4);
+        ctx.lineTo(28, 16);
+        ctx.lineTo(20, 16);
+        ctx.lineTo(20, 28);
+        ctx.lineTo(12, 28);
+        ctx.lineTo(12, 16);
+        ctx.lineTo(4, 16);
+        ctx.closePath();
+        ctx.fill();
+        
+        return canvas;
+    }
+
+    /**
+     * Update topology info display
+     */
+    updateTopologyInfo(summary) {
+        const infoDiv = document.getElementById('topologyInfo');
+        
+        if (!summary) {
+            infoDiv.innerHTML = '<div class="status-message">Topology loaded but no summary available.</div>';
+            return;
+        }
+        
+        let html = '<div class="topology-details">';
+        html += `<h4>Topology Summary</h4>`;
+        html += `<p><strong>Road Arms:</strong> ${summary.arms.length}</p>`;
+        html += `<ul>`;
+        summary.arms.forEach(arm => {
+            html += `<li>Arm ${arm.id}: ${arm.angle_deg.toFixed(1)}°</li>`;
+        });
+        html += `</ul>`;
+        html += `<p><strong>Movement Edges:</strong> ${summary.edge_supports.length}</p>`;
+        html += `<ul>`;
+        summary.edge_supports.forEach(edge => {
+            html += `<li>Arm ${edge.u} → Arm ${edge.v}: ${edge.weight} vehicles</li>`;
+        });
+        html += `</ul>`;
+        html += `<p><strong>Total Movements:</strong> ${summary.movements_total}</p>`;
+        html += '</div>';
+        
+        infoDiv.innerHTML = html;
+    }
+
+    /**
+     * Clear topology from map
+     */
+    clearTopology() {
+        this.topologyDataSource.entities.removeAll();
+        this.currentTopologyData = null;
+        
+        const infoDiv = document.getElementById('topologyInfo');
+        infoDiv.innerHTML = '<div class="status-message">Topology cleared. Click "Load Road Network" to display again.</div>';
+        
+        this.showTopologyStatus('Topology cleared', 'success');
+    }
+
+    /**
+     * Show status message in topology panel
+     */
+    showTopologyStatus(message, type = 'info') {
+        const statusDiv = document.getElementById('topologyStatus');
+        const statusText = document.getElementById('topologyStatusText');
         
         statusText.textContent = message;
         statusDiv.className = `status ${type}`;
