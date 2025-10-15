@@ -2,17 +2,23 @@
 # -*- coding: utf-8 -*-
 """
 Analyze driving direction for each vehicle trajectory in A0003.csv and A0008.csv
-Classify directions based on longitude/latitude changes:
+Classify directions based on trajectory relative to intersection center:
 A1: North-South straight
 A2: North-South left turn
 A3: East-West straight  
 A4: East-West left turn
 C: Other directions (including right turns, U-turns, etc.)
+
+Intersection center: longitude=123.152578, latitude=32.345267
 """
 
 import pandas as pd
 import numpy as np
 import math
+
+# Intersection center coordinates
+INTERSECTION_CENTER_LON = 123.152578
+INTERSECTION_CENTER_LAT = 32.345267
 
 def calculate_bearing(lat1, lon1, lat2, lon2):
     """
@@ -43,42 +49,35 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     
     return math.sqrt(lat_diff**2 + lon_diff**2)
 
+def get_direction_from_center(lat, lon):
+    """
+    Determine the direction of a point relative to intersection center
+    Returns: 'N', 'E', 'S', 'W' or None
+    """
+    bearing = calculate_bearing(INTERSECTION_CENTER_LAT, INTERSECTION_CENTER_LON, lat, lon)
+    
+    # North: 315-45 degrees, East: 45-135 degrees, South: 135-225 degrees, West: 225-315 degrees
+    if (bearing >= 315 or bearing < 45):
+        return 'N'
+    elif (bearing >= 45 and bearing < 135):
+        return 'E'
+    elif (bearing >= 135 and bearing < 225):
+        return 'S'
+    elif (bearing >= 225 and bearing < 315):
+        return 'W'
+    return None
+
 def analyze_trajectory_direction(trajectory_df):
     """
     Analyze driving direction of a single vehicle trajectory
+    Based on start and end points relative to intersection center
     """
-    # Filter out invalid data and stationary states based on movement distance
+    # Filter out invalid data
     trajectory_df = trajectory_df.copy()
     trajectory_df = trajectory_df.sort_values('collectiontime')
     
-    # Filter out stationary points based on distance between consecutive points
     if len(trajectory_df) < 2:
         return 'C'  # Too few data points
-    
-    # Calculate distances between consecutive points and keep only moving segments
-    valid_indices = [0]  # Always keep the first point
-    
-    for i in range(1, len(trajectory_df)):
-        prev_point = trajectory_df.iloc[valid_indices[-1]]
-        curr_point = trajectory_df.iloc[i]
-        
-        distance = calculate_distance(
-            prev_point['latitude'], prev_point['longitude'],
-            curr_point['latitude'], curr_point['longitude']
-        )
-        
-        # If distance > 5 meters, consider it as movement
-        if distance > 5:
-            valid_indices.append(i)
-    
-    # Filter trajectory to only include moving points
-    trajectory_df = trajectory_df.iloc[valid_indices]
-    
-    if len(trajectory_df) < 3:
-        return 'C'  # Too few movement points
-    
-    # Sort by time
-    trajectory_df = trajectory_df.sort_values('collectiontime')
     
     # Get start and end points
     start_point = trajectory_df.iloc[0]
@@ -90,109 +89,36 @@ def analyze_trajectory_direction(trajectory_df):
         end_point['latitude'], end_point['longitude']
     )
     
-    if total_distance < 10:  # Total displacement < 10m, consider as stationary
+    if total_distance < 10:  # Total displacement < 10m, consider as stationary or irregular
         return 'C'
     
-    # Calculate overall direction
-    overall_bearing = calculate_bearing(
-        start_point['latitude'], start_point['longitude'],
-        end_point['latitude'], end_point['longitude']
-    )
+    # Determine the direction of start and end points relative to intersection center
+    start_direction = get_direction_from_center(start_point['latitude'], start_point['longitude'])
+    end_direction = get_direction_from_center(end_point['latitude'], end_point['longitude'])
     
-    # Analyze trajectory curvature
-    # Calculate actual path length
-    actual_path_length = 0
-    for i in range(1, len(trajectory_df)):
-        prev_point = trajectory_df.iloc[i-1]
-        curr_point = trajectory_df.iloc[i]
-        segment_distance = calculate_distance(
-            prev_point['latitude'], prev_point['longitude'],
-            curr_point['latitude'], curr_point['longitude']
-        )
-        actual_path_length += segment_distance
-    
-    # Calculate curvature ratio (actual path length / straight line distance)
-    if total_distance > 0:
-        curvature_ratio = actual_path_length / total_distance
-    else:
-        curvature_ratio = 1.0
-    
-    # Analyze direction changes
-    bearings = []
-    for i in range(1, len(trajectory_df)):
-        prev_point = trajectory_df.iloc[i-1]
-        curr_point = trajectory_df.iloc[i]
-        bearing = calculate_bearing(
-            prev_point['latitude'], prev_point['longitude'],
-            curr_point['latitude'], curr_point['longitude']
-        )
-        bearings.append(bearing)
-    
-    if len(bearings) == 0:
+    if start_direction is None or end_direction is None:
         return 'C'
     
-    # Calculate standard deviation of directions
-    bearings = np.array(bearings)
-    # Handle circular nature of angles (0 and 360 degrees are close)
-    bearing_std = np.std(np.unwrap(np.radians(bearings))) * 180 / np.pi
+    # Classify based on entry and exit directions
+    # A1: North-South straight (N->S or S->N)
+    if (start_direction == 'N' and end_direction == 'S') or (start_direction == 'S' and end_direction == 'N'):
+        return 'A1'
     
-    # Determine main driving direction
-    avg_bearing = np.mean(bearings)
+    # A2: North-South left turn (N->E or S->W)
+    elif (start_direction == 'N' and end_direction == 'E') or (start_direction == 'S' and end_direction == 'W'):
+        return 'A2'
     
-    # Define direction categories
-    # North: 315-45 degrees, East: 45-135 degrees, South: 135-225 degrees, West: 225-315 degrees
-    if (avg_bearing >= 315 or avg_bearing < 45):
-        main_direction = 'N'  # North
-    elif (avg_bearing >= 45 and avg_bearing < 135):
-        main_direction = 'E'  # East
-    elif (avg_bearing >= 135 and avg_bearing < 225):
-        main_direction = 'S'  # South
+    # A3: East-West straight (E->W or W->E)
+    elif (start_direction == 'E' and end_direction == 'W') or (start_direction == 'W' and end_direction == 'E'):
+        return 'A3'
+    
+    # A4: East-West left turn (E->N or W->S)
+    elif (start_direction == 'E' and end_direction == 'N') or (start_direction == 'W' and end_direction == 'S'):
+        return 'A4'
+    
+    # All other cases (right turns, U-turns, same direction, etc.)
     else:
-        main_direction = 'W'  # West
-    
-    # Determine if it's straight or turning, and if turning, left or right
-    is_turn = (curvature_ratio > 1.3) or (bearing_std > 30)
-    
-    # For turns, determine if it's left or right turn
-    turn_direction = None
-    if is_turn and len(bearings) > 2:
-        # Calculate the overall direction change
-        start_bearing = bearings[0]
-        end_bearing = bearings[-1]
-        
-        # Calculate the signed angle difference (accounting for circular nature)
-        angle_diff = (end_bearing - start_bearing + 180) % 360 - 180
-        
-        # Positive angle_diff means right turn, negative means left turn
-        if abs(angle_diff) > 30:  # Significant turn
-            if angle_diff > 0:
-                turn_direction = 'right'
-            else:
-                turn_direction = 'left'
-    
-    # Classify based on direction and turning status
-    if main_direction in ['N', 'S']:  # North-South direction
-        if is_turn:
-            if turn_direction == 'left':
-                return 'A2'  # North-South left turn
-            elif turn_direction == 'right':
-                return 'C'  # Right turn belongs to C category
-            else:
-                return 'C'  # Uncertain turn direction, classify as C
-        else:
-            return 'A1'  # North-South straight
-    elif main_direction in ['E', 'W']:  # East-West direction
-        if is_turn:
-            if turn_direction == 'left':
-                return 'A4'  # East-West left turn
-            elif turn_direction == 'right':
-                return 'C'  # Right turn belongs to C category
-            else:
-                return 'C'  # Uncertain turn direction, classify as C
-        else:
-            return 'A3'  # East-West straight
-    else:
-        return 'C'  # Other cases
+        return 'C'
 
 def main():
     print("Starting to read trajectory data files...")

@@ -265,21 +265,22 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             # Check mode: time_range, batch, or single
             start_time = params.get('start_time')
             end_time = params.get('end_time')
-            vehicle_count = params.get('vehicle_count')
+            vehicle_count_param = params.get('vehicle_count')
             
             if start_time and end_time:
                 # Time range mode: load all vehicles in time range
                 data = load_vehicle_data(road_id=road_id, date=date, start_time=start_time, end_time=end_time, direction=direction)
                 vehicle_id = None  # Not applicable in time range mode
                 vehicle_count = None  # Will be calculated from data
-            elif vehicle_count:
+            elif vehicle_count_param:
                 # Batch mode: load multiple vehicles
-                vehicle_count = int(vehicle_count)
+                vehicle_count = int(vehicle_count_param)
                 data = load_vehicle_data(road_id=road_id, vehicle_count=vehicle_count, date=date, direction=direction)
                 vehicle_id = None  # Not applicable in batch mode
             else:
                 # Single mode: load specific vehicle
                 vehicle_id = int(params.get('vehicle_id', 1))
+                vehicle_count = None  # Not applicable in single mode
                 data = load_vehicle_data(vehicle_id=vehicle_id, road_id=road_id, date=date, direction=direction)
             
             if limit and limit > 0:
@@ -342,21 +343,22 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             # Check mode: time_range, batch, or single
             start_time = params.get('start_time')
             end_time = params.get('end_time')
-            vehicle_count = params.get('vehicle_count')
+            vehicle_count_param = params.get('vehicle_count')
             
             if start_time and end_time:
                 # Time range mode: load all vehicles in time range
                 data = load_vehicle_data(road_id=road_id, date=date, start_time=start_time, end_time=end_time, direction=direction)
                 vehicle_id = None  # Not applicable in time range mode
                 vehicle_count = None  # Will be calculated from data
-            elif vehicle_count:
+            elif vehicle_count_param:
                 # Batch mode: load multiple vehicles
-                vehicle_count = int(vehicle_count)
+                vehicle_count = int(vehicle_count_param)
                 data = load_vehicle_data(road_id=road_id, vehicle_count=vehicle_count, date=date, direction=direction)
                 vehicle_id = None  # Not applicable in batch mode
             else:
                 # Single mode: load specific vehicle
                 vehicle_id = int(params.get('vehicle_id', 1))
+                vehicle_count = None  # Not applicable in single mode
                 data = load_vehicle_data(vehicle_id=vehicle_id, road_id=road_id, date=date, direction=direction)
             
             if not data:
@@ -372,7 +374,34 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             speeds = [point['speed'] for point in data]
             
             # Build summary based on mode
-            if vehicle_count:
+            if start_time and end_time:
+                # Time range mode summary
+                unique_vehicles = list(set([point['vehicle_id'] for point in data]))
+                summary = {
+                    'status': 'success',
+                    'mode': 'time_range',
+                    'start_time': start_time,
+                    'end_time': end_time,
+                    'vehicle_count': len(unique_vehicles),
+                    'vehicle_ids': unique_vehicles,
+                    'total_points': len(data),
+                    'time_range': {
+                        'start': data[0]['time_stamp'],
+                        'end': data[-1]['time_stamp']
+                    },
+                    'coordinate_bounds': {
+                        'longitude_min': min(longitudes),
+                        'longitude_max': max(longitudes),
+                        'latitude_min': min(latitudes),
+                        'latitude_max': max(latitudes)
+                    },
+                    'speed_stats': {
+                        'min': min(speeds),
+                        'max': max(speeds),
+                        'avg': sum(speeds) / len(speeds)
+                    }
+                }
+            elif vehicle_count:
                 # Batch mode summary
                 unique_vehicles = list(set([point['vehicle_id'] for point in data]))
                 summary = {
@@ -941,6 +970,8 @@ def run_server(host='127.0.0.1', port=5000):
             print(f"⚠ Warning: CSV file {road_id}.csv does not exist")
     
     # Create and start server
+    # Allow address reuse to prevent "Address already in use" errors
+    socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer((host, port), CustomHTTPRequestHandler) as httpd:
         print(f"Server running at http://{host}:{port}")
         print("Press Ctrl+C to stop the server")
