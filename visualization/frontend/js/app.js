@@ -553,15 +553,17 @@ class GeoVisualization {
         // Clear previous data
         this.dataSource.entities.removeAll();
 
-        // Group data by vehicle ID and date combination
+        // Group data by vehicle ID + date + seg_id (if present)
         const vehicleGroups = {};
         data.forEach(point => {
-            // Create unique key combining vehicle_id and date
-            const trajectoryKey = `${point.vehicle_id}_${point.date}`;
+            // Create unique key combining vehicle_id, date, and seg_id
+            const segId = (typeof point.seg_id === 'number') ? point.seg_id : 0;
+            const trajectoryKey = `${point.vehicle_id}_${point.date}_${segId}`;
             if (!vehicleGroups[trajectoryKey]) {
                 vehicleGroups[trajectoryKey] = {
                     vehicle_id: point.vehicle_id,
                     date: point.date,
+                    seg_id: segId,
                     points: []
                 };
             }
@@ -618,7 +620,7 @@ class GeoVisualization {
                         material: trajectoryColor.withAlpha(0.8),
                         clampToGround: true
                     },
-                    description: `Vehicle ${trajectoryInfo.vehicle_id} - ${trajectoryInfo.date} trajectory (${trajectoryData.length} points)`
+                    description: `Vehicle ${trajectoryInfo.vehicle_id} - ${trajectoryInfo.date} - seg ${trajectoryInfo.seg_id} (${trajectoryData.length} points)`
                 });
             }
         });
@@ -657,6 +659,7 @@ class GeoVisualization {
                 <h4>${title}</h4>
                 <table>
                     <tr><td>Vehicle ID:</td><td>${point.vehicle_id}</td></tr>
+                    ${typeof point.seg_id === 'number' ? `<tr><td>Seg ID:</td><td>${point.seg_id}</td></tr>` : ''}
                     <tr><td>Date:</td><td>${point.date}</td></tr>
                     <tr><td>Time:</td><td>${point.time_stamp}</td></tr>
                     <tr><td>Road ID:</td><td>${point.road_id}</td></tr>

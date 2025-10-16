@@ -45,8 +45,8 @@ def load_vehicle_data(vehicle_id=None, road_id='A0003', vehicle_count=None, date
         direction: Direction filter (A1, A2, A3, A4, C) (optional)
     """
     try:
-        # Build CSV file path based on road_id
-        csv_file_path = os.path.join(CSV_BASE_PATH, f'{road_id}.csv')
+        # Build CSV file path based on road_id (split only)
+        csv_file_path = os.path.join(CSV_BASE_PATH, f'{road_id}_split.csv')
         
         # Read CSV file
         df = pd.read_csv(csv_file_path)
@@ -120,6 +120,13 @@ def load_vehicle_data(vehicle_id=None, road_id='A0003', vehicle_count=None, date
                 'brakestatus': int(row['brakestatus'])
             }
             
+            # seg_id if present (from split files)
+            if 'seg_id' in row and pd.notna(row['seg_id']):
+                try:
+                    data_point['seg_id'] = int(row['seg_id'])
+                except Exception:
+                    data_point['seg_id'] = 0
+                
             # Add optional new fields if they exist in the CSV
             if 'gearnum' in row and pd.notna(row['gearnum']) and str(row['gearnum']).strip():
                 data_point['gearnum'] = str(row['gearnum'])
@@ -466,8 +473,8 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
         try:
             road_id = params.get('road_id', 'A0003')
             
-            # Build CSV file path based on road_id
-            csv_file_path = os.path.join(CSV_BASE_PATH, f'{road_id}.csv')
+            # Build CSV file path based on road_id (split only)
+            csv_file_path = os.path.join(CSV_BASE_PATH, f'{road_id}_split.csv')
             
             if not os.path.exists(csv_file_path):
                 self._send_json_response({
@@ -644,8 +651,8 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                     
                 mode = 'single'
             
-            # Build CSV file path based on road_id
-            csv_file_path = os.path.join(CSV_BASE_PATH, f'{road_id}.csv')
+            # Build CSV file path based on road_id (split only)
+            csv_file_path = os.path.join(CSV_BASE_PATH, f'{road_id}_split.csv')
             
             if not os.path.exists(csv_file_path):
                 self._send_json_response({
@@ -882,8 +889,8 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 }, 400)
                 return
             
-            # Build CSV file path based on road_id
-            csv_file_path = os.path.join(CSV_BASE_PATH, f'{road_id}.csv')
+            # Build CSV file path based on road_id (split only)
+            csv_file_path = os.path.join(CSV_BASE_PATH, f'{road_id}_split.csv')
             
             if not os.path.exists(csv_file_path):
                 self._send_json_response({
@@ -1016,14 +1023,14 @@ def run_server(host='127.0.0.1', port=5000):
     print("Starting Geographic Data Visualization Backend Service...")
     print(f"CSV base path: {os.path.abspath(CSV_BASE_PATH)}")
     
-    # Check if CSV files exist
+    # Check if split CSV files exist
     road_ids = ['A0003', 'A0008']
     for road_id in road_ids:
-        csv_file = os.path.join(CSV_BASE_PATH, f'{road_id}.csv')
+        csv_file = os.path.join(CSV_BASE_PATH, f'{road_id}_split.csv')
         if os.path.exists(csv_file):
-            print(f"✓ Found CSV file: {road_id}.csv")
+            print(f"✓ Found split CSV file: {road_id}_split.csv")
         else:
-            print(f"⚠ Warning: CSV file {road_id}.csv does not exist")
+            print(f"⚠ Warning: split CSV file {road_id}_split.csv does not exist")
     
     # Create and start server
     # Allow address reuse to prevent "Address already in use" errors
