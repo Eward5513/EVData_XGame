@@ -93,12 +93,22 @@ def load_vehicle_data(vehicle_id=None, road_id='A0003', vehicle_count=None, date
                     filtered_directions = filtered_directions[filtered_directions['date'] == date]
                 
                 if not filtered_directions.empty:
-                    # Create a set of (vehicle_id, date) tuples for faster lookup
-                    valid_combinations = set(zip(filtered_directions['vehicle_id'], filtered_directions['date']))
+                    # Create a set of (vehicle_id, date, seg_id) triplets for faster lookup
+                    valid_triplets = set(
+                        (int(v), str(d), int(s))
+                        for v, d, s in zip(
+                            filtered_directions['vehicle_id'],
+                            filtered_directions['date'],
+                            filtered_directions['seg_id'],
+                        )
+                    )
                     
-                    # Filter vehicle_data to only include vehicles with matching direction
+                    # Filter vehicle_data to only include rows with matching (vehicle_id, date, seg_id)
                     vehicle_data = vehicle_data[
-                        vehicle_data.apply(lambda row: (row['vehicle_id'], row['date']) in valid_combinations, axis=1)
+                        vehicle_data.apply(
+                            lambda row: (int(row['vehicle_id']), str(row['date']), int(row['seg_id'])) in valid_triplets,
+                            axis=1,
+                        )
                     ]
                 else:
                     # No vehicles match the direction filter
@@ -215,6 +225,10 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 self._handle_speed_time_range(params)
             elif path == '/api/topology/intersection':
                 self._handle_intersection_topology(params)
+            elif path == '/api/direction/segments':
+                self._handle_direction_segments(params)
+            elif path == '/api/trajectory/segment':
+                self._handle_trajectory_segment(params)
             else:
                 self._send_json_response({
                     'status': 'error',
@@ -619,6 +633,7 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             end_time = params.get('end_time')
             date = params.get('date')
             direction = params.get('direction')  # Get direction filter
+            seg_id_param = params.get('seg_id')
             
             if not date:
                 self._send_json_response({
@@ -719,12 +734,22 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                         filtered_directions = filtered_directions[filtered_directions['date'] == date]
                     
                     if not filtered_directions.empty:
-                        # Create a set of (vehicle_id, date) tuples for faster lookup
-                        valid_combinations = set(zip(filtered_directions['vehicle_id'], filtered_directions['date']))
+                        # Create a set of (vehicle_id, date, seg_id) triplets for faster lookup
+                        valid_triplets = set(
+                            (int(v), str(d), int(s))
+                            for v, d, s in zip(
+                                filtered_directions['vehicle_id'],
+                                filtered_directions['date'],
+                                filtered_directions['seg_id'],
+                            )
+                        )
                         
-                        # Filter vehicle_data to only include vehicles with matching direction
+                        # Filter vehicle_data to only include rows with matching (vehicle_id, date, seg_id)
                         vehicle_data = vehicle_data[
-                            vehicle_data.apply(lambda row: (row['vehicle_id'], row['date']) in valid_combinations, axis=1)
+                            vehicle_data.apply(
+                                lambda row: (int(row['vehicle_id']), str(row['date']), int(row['seg_id'])) in valid_triplets,
+                                axis=1,
+                            )
                         ]
                     else:
                         # No vehicles match the direction filter
@@ -751,17 +776,50 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             # Sort by time for proper time series
             vehicle_data = vehicle_data.sort_values('collectiontime')
             
-            # Convert to list of dictionaries for speed analysis
+            # Optional seg_id filtering
+            if seg_id_param is not None:
+                try:
+                    seg_id_int = int(seg_id_param)
+                    if 'seg_id' in vehicle_data.columns:
+                        vehicle_data = vehicle_data[vehicle_data['seg_id'] == seg_id_int]
+                except ValueError:
+                    pass
+
+            # Convert to list of dictionaries with all metrics for charting
             speed_data = []
             for _, row in vehicle_data.iterrows():
-                speed_data.append({
+                point = {
                     'vehicle_id': int(row['vehicle_id']),
                     'collectiontime': int(row['collectiontime']),
                     'date': str(row['date']),
                     'time_stamp': str(row['time_stamp']),
                     'road_id': str(row['road_id']),
-                    'speed': float(row['speed'])
-                })
+                    'speed': float(row['speed']) if 'speed' in row and pd.notna(row['speed']) else None
+                }
+                # seg_id if present
+                if 'seg_id' in row and pd.notna(row['seg_id']):
+                    try:
+                        point['seg_id'] = int(row['seg_id'])
+                    except Exception:
+                        point['seg_id'] = None
+                # include other optional metrics if present
+                if 'acceleratorpedal' in row and pd.notna(row['acceleratorpedal']):
+                    try:
+                        point['acceleratorpedal'] = float(row['acceleratorpedal'])
+                    except Exception:
+                        point['acceleratorpedal'] = None
+                if 'brakestatus' in row and pd.notna(row['brakestatus']):
+                    try:
+                        point['brakestatus'] = int(row['brakestatus'])
+                    except Exception:
+                        point['brakestatus'] = None
+                if 'gearnum' in row and pd.notna(row['gearnum']):
+                    point['gearnum'] = str(row['gearnum'])
+                if 'havebrake' in row and pd.notna(row['havebrake']):
+                    point['havebrake'] = str(row['havebrake'])
+                if 'havedriver' in row and pd.notna(row['havedriver']):
+                    point['havedriver'] = str(row['havedriver'])
+                speed_data.append(point)
             
             # Build response based on mode
             if mode == 'time_range':
@@ -1013,6 +1071,108 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 'status': 'error',
                 'message': f'Error loading topology: {str(e)}'
             }, 500)
+
+    def _handle_direction_segments(self, params):
+        """List segments filtered by road_id and direction (and optional vehicle_id/date/seg_id)."""
+        try:
+            road_id = params.get('road_id', 'A0003')
+            direction = params.get('direction', 'A1')
+            vehicle_id = params.get('vehicle_id')
+            date = params.get('date')
+            seg_id = params.get('seg_id')
+
+            df = load_direction_data()
+            if df is None or df.empty:
+                self._send_json_response({'status': 'success', 'segments': [], 'total': 0})
+                return
+
+            filt = (df['road_id'] == road_id) & (df['direction'] == direction)
+            if vehicle_id:
+                try:
+                    vid = int(vehicle_id)
+                    filt &= (df['vehicle_id'] == vid)
+                except ValueError:
+                    pass
+            if date:
+                filt &= (df['date'] == date)
+            if seg_id:
+                try:
+                    sid = int(seg_id)
+                    filt &= (df['seg_id'] == sid)
+                except ValueError:
+                    pass
+
+            df_out = df[filt].copy()
+            df_out = df_out.sort_values(['vehicle_id', 'date', 'seg_id'])
+            segments = [
+                {
+                    'vehicle_id': int(r['vehicle_id']),
+                    'date': str(r['date']),
+                    'seg_id': int(r['seg_id']),
+                    'road_id': str(r['road_id']),
+                    'direction': str(r['direction'])
+                }
+                for _, r in df_out.iterrows()
+            ]
+
+            self._send_json_response({'status': 'success', 'road_id': road_id, 'direction': direction, 'total': len(segments), 'segments': segments})
+        except Exception as e:
+            self._send_json_response({'status': 'error', 'message': str(e)}, 500)
+
+    def _handle_trajectory_segment(self, params):
+        """Return time series for a specific (vehicle_id, date, seg_id) on a road."""
+        try:
+            road_id = params.get('road_id', 'A0003')
+            vehicle_id = params.get('vehicle_id')
+            date = params.get('date')
+            seg_id = params.get('seg_id')
+
+            if not (vehicle_id and date and seg_id):
+                self._send_json_response({'status': 'error', 'message': 'vehicle_id, date, seg_id are required'}, 400)
+                return
+
+            try:
+                vehicle_id_i = int(vehicle_id)
+                seg_id_i = int(seg_id)
+            except ValueError:
+                self._send_json_response({'status': 'error', 'message': 'vehicle_id and seg_id must be integers'}, 400)
+                return
+
+            csv_file_path = os.path.join(CSV_BASE_PATH, f'{road_id}_split.csv')
+            if not os.path.exists(csv_file_path):
+                self._send_json_response({'status': 'error', 'message': f'CSV file for road {road_id} not found'}, 404)
+                return
+
+            df = pd.read_csv(csv_file_path)
+            df_seg = df[(df['vehicle_id'] == vehicle_id_i) & (df['date'] == date) & (df['seg_id'] == seg_id_i)].copy()
+
+            if df_seg.empty:
+                self._send_json_response({'status': 'error', 'message': 'No data for specified segment'}, 404)
+                return
+
+            df_seg = df_seg.sort_values('collectiontime')
+
+            rows = []
+            for _, r in df_seg.iterrows():
+                row = {
+                    'vehicle_id': int(r['vehicle_id']),
+                    'collectiontime': int(r['collectiontime']),
+                    'date': str(r['date']),
+                    'time_stamp': str(r['time_stamp']),
+                    'road_id': str(r['road_id']),
+                    'seg_id': int(r['seg_id']),
+                    'speed': float(r['speed']) if pd.notna(r['speed']) else None,
+                    'acceleratorpedal': float(r['acceleratorpedal']) if 'acceleratorpedal' in r and pd.notna(r['acceleratorpedal']) else None,
+                    'brakestatus': int(r['brakestatus']) if 'brakestatus' in r and pd.notna(r['brakestatus']) else None,
+                    'gearnum': (str(r['gearnum']) if 'gearnum' in r and pd.notna(r['gearnum']) else 'N/A'),
+                    'havebrake': (str(r['havebrake']) if 'havebrake' in r and pd.notna(r['havebrake']) else 'N/A'),
+                    'havedriver': (str(r['havedriver']) if 'havedriver' in r and pd.notna(r['havedriver']) else 'N/A'),
+                }
+                rows.append(row)
+
+            self._send_json_response({'status': 'success', 'road_id': road_id, 'vehicle_id': vehicle_id_i, 'date': date, 'seg_id': seg_id_i, 'total_points': len(rows), 'data': rows})
+        except Exception as e:
+            self._send_json_response({'status': 'error', 'message': str(e)}, 500)
     
     def log_message(self, format, *args):
         """Override log message to show custom format"""

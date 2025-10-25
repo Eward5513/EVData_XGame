@@ -5,12 +5,22 @@ class GeoVisualization {
         this.viewer = null;
         this.dataSource = null;
         this.topologyDataSource = null;
+        this.overlayDataSource = null;
         this.currentVehicleData = [];
         this.currentTrafficLightData = null;
         this.currentSpeedData = null;
         this.currentSpeedTrafficLights = null;
         this.currentTopologyData = null;
         this.apiBaseUrl = 'http://127.0.0.1:5000/api';
+        this.currentSelectedMetric = 'speed';
+        this.currentSelectedSegId = null;
+        
+		// Analysis centers and radius (A0003 and A0008 should both be displayed)
+		this.analysisCenters = {
+			A0003: { lon: 123.152480, lat: 32.345120 },
+			A0008: { lon: 123.181261, lat: 32.327137 }
+		};
+        this.centerChangeRadiusMeters = 50.0;
         
         this.bindEvents();
         this.init();
@@ -48,6 +58,10 @@ class GeoVisualization {
         this.topologyDataSource = new Cesium.CustomDataSource('intersectionTopology');
         this.viewer.dataSources.add(this.topologyDataSource);
 
+        // Overlay data source for analysis markers (center + radius)
+        this.overlayDataSource = new Cesium.CustomDataSource('analysisOverlays');
+        this.viewer.dataSources.add(this.overlayDataSource);
+
         // Set initial view to China region
         this.viewer.camera.setView({
             destination: Cesium.Cartesian3.fromDegrees(116.4, 39.9, 1000000)
@@ -61,6 +75,9 @@ class GeoVisualization {
 
         // Ensure modal is hidden on initialization
         this.ensureModalHidden();
+
+        // Draw analysis center and radius overlay
+        this.drawAnalysisCenterOverlay();
 
         console.log('Cesium map initialization completed');
     }
@@ -83,6 +100,153 @@ class GeoVisualization {
         }
         
         document.body.style.overflow = 'auto';
+    }
+
+    /**
+     * Helper to fetch JSON
+     */
+    async fetchJson(url) {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        return await resp.json();
+    }
+
+    /**
+	 * Draw analysis center markers and radius circles for all configured roads
+     */
+    drawAnalysisCenterOverlay() {
+		if (!this.overlayDataSource || !this.viewer) return;
+		// Clear previous overlays
+		this.overlayDataSource.entities.removeAll();
+
+		const r = this.centerChangeRadiusMeters;
+
+		Object.entries(this.analysisCenters).forEach(([roadId, center]) => {
+			const lon = center.lon;
+			const lat = center.lat;
+			const centerPos = Cesium.Cartesian3.fromDegrees(lon, lat);
+
+			// Choose distinct colors per road for clarity
+			const pointColor = roadId === 'A0008' ? Cesium.Color.MAGENTA : Cesium.Color.CYAN;
+			const outlineColor = roadId === 'A0008' ? Cesium.Color.YELLOW : Cesium.Color.RED;
+			const fillColor = (roadId === 'A0008' ? Cesium.Color.MAGENTA : Cesium.Color.CYAN).withAlpha(0.15);
+
+			// Center point marker with label
+			this.overlayDataSource.entities.add({
+				id: `analysis_center_point_${roadId}`,
+				position: centerPos,
+				point: {
+					pixelSize: 14,
+					color: pointColor,
+					outlineColor: outlineColor,
+					outlineWidth: 2
+				},
+				label: {
+					text: `${roadId} Center`,
+					font: '14px sans-serif',
+					fillColor: Cesium.Color.WHITE,
+					outlineColor: Cesium.Color.BLACK,
+					outlineWidth: 2,
+					style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+					verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+					pixelOffset: new Cesium.Cartesian2(0, -20)
+				},
+				description: `<h3>${roadId} Direction Analysis Center</h3><p>Lon: ${lon.toFixed(6)}, Lat: ${lat.toFixed(6)}</p>`
+			});
+
+			// Radius circle (meters)
+			this.overlayDataSource.entities.add({
+				id: `analysis_center_radius_${roadId}`,
+				position: centerPos,
+				ellipse: {
+					semiMajorAxis: r,
+					semiMinorAxis: r,
+					material: fillColor,
+					outline: true,
+					outlineColor: outlineColor,
+					outlineWidth: 2
+				},
+				description: `<h3>${roadId} Near-Center Radius</h3><p>Radius: ${r.toFixed(1)} m</p>`
+			});
+		});
+    }
+
+    /**
+     * Draw a simple line chart for a generic metric over time using canvas
+     */
+    drawGenericMetricChart(containerEl, points, metricKey, title = '') {
+        if (!containerEl) return;
+        const width = containerEl.clientWidth || 800;
+        const height = 320;
+        const padding = 50;
+        const canvasId = 'genericMetricCanvas';
+        containerEl.innerHTML = `<div style="margin-bottom:6px;font-weight:bold;">${title} - ${metricKey}</div><canvas id="${canvasId}" width="${width}" height="${height}" style="border:1px solid #ccc;border-radius:4px;"></canvas>`;
+        const canvas = document.getElementById(canvasId);
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+
+        const times = points.map(p => p.collectiontime);
+        const values = points.map(p => {
+            const v = p[metricKey];
+            if (metricKey === 'gearnum' || metricKey === 'havebrake' || metricKey === 'havedriver') {
+                // Cast categorical/flag to number if possible; else 0
+                const n = Number(v);
+                return Number.isFinite(n) ? n : 0;
+            }
+            const n = Number(v);
+            return Number.isFinite(n) ? n : 0;
+        });
+        if (times.length === 0) return;
+        const minT = Math.min(...times);
+        const maxT = Math.max(...times);
+        const minV = Math.min(...values);
+        const maxV = Math.max(...values);
+
+        const xMap = (t) => {
+            if (maxT === minT) return padding + (width - 2 * padding) / 2;
+            return padding + (t - minT) / (maxT - minT) * (width - 2 * padding);
+        };
+        const yMap = (v) => {
+            if (maxV === minV) return padding + (height - 2 * padding) / 2;
+            const norm = (v - minV) / (maxV - minV);
+            return padding + (height - 2 * padding) * (1 - norm);
+        };
+
+        // Axes
+        ctx.clearRect(0, 0, width, height);
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(padding, padding);
+        ctx.lineTo(padding, height - padding);
+        ctx.lineTo(width - padding, height - padding);
+        ctx.stroke();
+
+        // Title
+        ctx.fillStyle = '#000';
+        ctx.font = '14px sans-serif';
+        ctx.fillText(`${metricKey} over time`, padding, padding - 12);
+
+        // Line
+        ctx.strokeStyle = '#007bff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        points.forEach((p, i) => {
+            const x = xMap(p.collectiontime);
+            const y = yMap(values[i]);
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+
+        // Dots
+        ctx.fillStyle = '#007bff';
+        points.forEach((p, i) => {
+            const x = xMap(p.collectiontime);
+            const y = yMap(values[i]);
+            ctx.beginPath();
+            ctx.arc(x, y, 2, 0, Math.PI * 2);
+            ctx.fill();
+        });
     }
 
     /**
@@ -110,11 +274,14 @@ class GeoVisualization {
         const loadTimeRangeBtn = document.getElementById('loadTimeRangeBtn');
         const closeSpeedModal = document.getElementById('closeSpeedModal');
         const speedModal = document.getElementById('speedModal');
+        const speedMetricSelect = document.getElementById('speedMetric');
+        const speedSegIdInput = document.getElementById('speedSegId');
         
         // Topology elements
         const loadTopologyBtn = document.getElementById('loadTopologyBtn');
         const clearTopologyBtn = document.getElementById('clearTopologyBtn');
         const topologyRoadIdSelect = document.getElementById('topologyRoadId');
+
 
         loadDataBtn.addEventListener('click', () => {
             this.loadVehicleData();
@@ -178,6 +345,20 @@ class GeoVisualization {
         loadTimeRangeBtn.addEventListener('click', () => {
             this.loadTimeRange();
         });
+
+        // Track metric and seg id selections
+        if (speedMetricSelect) {
+            this.currentSelectedMetric = speedMetricSelect.value || 'speed';
+            speedMetricSelect.addEventListener('change', (e) => {
+                this.currentSelectedMetric = e.target.value || 'speed';
+            });
+        }
+        if (speedSegIdInput) {
+            speedSegIdInput.addEventListener('input', (e) => {
+                const v = e.target.value;
+                this.currentSelectedSegId = v ? Number(v) : null;
+            });
+        }
 
         // Topology event listeners
         loadTopologyBtn.addEventListener('click', () => {
@@ -244,6 +425,7 @@ class GeoVisualization {
                 this.togglePanel(header.dataset.panel);
             });
         });
+
     }
 
     /**
@@ -1037,6 +1219,8 @@ class GeoVisualization {
         }
     }
 
+    
+
     /**
      * Load time range information for the selected date
      */
@@ -1100,6 +1284,8 @@ class GeoVisualization {
             const roadId = document.getElementById('speedRoadId').value;
             const speedMode = document.getElementById('speedMode').value;
             const date = document.getElementById('speedDate').value;
+            const selectedMetric = this.currentSelectedMetric || 'speed';
+            const segId = this.currentSelectedSegId;
             
             if (!date) {
                 this.showSpeedStatus('Please select a date', 'warning');
@@ -1147,6 +1333,10 @@ class GeoVisualization {
                     apiUrl += `&direction=${direction}`;
                 }
             }
+            // Optional seg_id filter
+            if (typeof segId === 'number' && Number.isFinite(segId)) {
+                apiUrl += `&seg_id=${segId}`;
+            }
             
             this.showSpeedStatus('Analyzing speed data...', 'info');
             
@@ -1167,6 +1357,18 @@ class GeoVisualization {
                 throw new Error(errorMsg);
             }
             
+            // Optional client-side filter by seg_id if available in records
+            if (typeof segId === 'number' && Number.isFinite(segId)) {
+                const beforeCount = speedData.data.length;
+                speedData.data = speedData.data.filter(p => p && p.seg_id === segId);
+                console.log(`Filtered by seg_id=${segId}: ${beforeCount} -> ${speedData.data.length}`);
+                if (speedData.data.length === 0) {
+                    throw new Error('No data after applying seg_id filter');
+                }
+            }
+
+            // Attach selected metric
+            speedData.metric = selectedMetric;
             this.currentSpeedData = speedData;
             
             // Get traffic light data for the time range
@@ -1290,12 +1492,12 @@ class GeoVisualization {
         // Update modal title based on mode
         let titleText, infoText;
         if (speedData.mode === 'single') {
-            titleText = `Speed Analysis - Vehicle ${speedData.vehicle_id} (${speedData.date})`;
-            infoText = `Vehicle ${speedData.vehicle_id} on ${speedData.date} | Road ${speedData.road_id} | ${speedData.total_points} data points`;
+            titleText = `Metric Analysis (${speedData.metric}) - Vehicle ${speedData.vehicle_id} (${speedData.date})`;
+            infoText = `Vehicle ${speedData.vehicle_id} on ${speedData.date} | Road ${speedData.road_id} | ${speedData.total_points} records`;
         } else {
             // Time range mode
-            titleText = `Speed Analysis - Time Range ${speedData.start_time}-${speedData.end_time} (${speedData.date})`;
-            infoText = `${speedData.vehicle_count} vehicles from ${speedData.start_time} to ${speedData.end_time} on ${speedData.date} | Road ${speedData.road_id} | ${speedData.total_points} data points`;
+            titleText = `Metric Analysis (${speedData.metric}) - Time Range ${speedData.start_time}-${speedData.end_time} (${speedData.date})`;
+            infoText = `${speedData.vehicle_count} vehicles from ${speedData.start_time} to ${speedData.end_time} on ${speedData.date} | Road ${speedData.road_id} | ${speedData.total_points} records`;
         }
         
         titleElement.textContent = titleText;
@@ -1303,7 +1505,7 @@ class GeoVisualization {
         // Create chart header
         let html = `
             <div class="speed-chart-header">
-                <div class="speed-chart-title">Speed vs Time Chart</div>
+                <div class="speed-chart-title">${speedData.metric} vs Time</div>
                 <div class="speed-chart-info">
                     ${infoText}
                 </div>
@@ -1318,7 +1520,7 @@ class GeoVisualization {
             html += `
                 <div class="speed-legend-item">
                     <div class="speed-legend-color" style="background-color: #4CAF50;"></div>
-                    <span>Speed</span>
+                    <span>${speedData.metric}</span>
                 </div>`;
         } else {
             // Time range mode - show legend for multiple vehicles
@@ -1394,7 +1596,11 @@ class GeoVisualization {
         
         // Prepare data - use collectiontime (Unix timestamp) for X-axis
         const collectionTimes = speedPoints.map(p => p.collectiontime);
-        const speeds = speedPoints.map(p => p.speed);
+        const metricKey = this.currentSelectedMetric || (this.currentSpeedData && this.currentSpeedData.metric) || 'speed';
+        const values = speedPoints.map(p => {
+            const n = Number(p[metricKey]);
+            return Number.isFinite(n) ? n : 0;
+        });
         
         // Check time data
         console.log('First few collection times:');
@@ -1412,23 +1618,23 @@ class GeoVisualization {
             return padding + ((timestamp - minTime) / (maxTime - minTime)) * chartWidth;
         };
         
-        const minSpeed = Math.min(...speeds);
-        const maxSpeed = Math.max(...speeds);
+        const minVal = Math.min(...values);
+        const maxVal = Math.max(...values);
         
         console.log(`Time range: ${new Date(minTime)} - ${new Date(maxTime)}`);
         
-        // Add some padding to speed range
-        const speedPadding = Math.max(1, (maxSpeed - minSpeed) * 0.1);
-        const speedMin = Math.max(0, minSpeed - speedPadding);
-        const speedMax = maxSpeed + speedPadding;
+        // Add some padding to Y range
+        const valuePadding = Math.max(1, (maxVal - minVal) * 0.1);
+        const valueMin = minVal - valuePadding;
+        const valueMax = maxVal + valuePadding;
         
-        console.log(`Adjusted speed range: ${speedMin} - ${speedMax} km/h`);
+        console.log(`Adjusted ${metricKey} range: ${valueMin} - ${valueMax}`);
         
         // Helper functions
-        const speedToY = (speed) => {
-            if (speedMax === speedMin) return padding + chartHeight / 2;
-            const normalizedSpeed = (speed - speedMin) / (speedMax - speedMin);
-            return padding + chartHeight * (1 - normalizedSpeed);
+        const valueToY = (val) => {
+            if (valueMax === valueMin) return padding + chartHeight / 2;
+            const normalized = (val - valueMin) / (valueMax - valueMin);
+            return padding + chartHeight * (1 - normalized);
         };
         
         // Clear canvas
@@ -1463,18 +1669,18 @@ class GeoVisualization {
         ctx.font = '12px Arial';
         ctx.fillStyle = '#666666';
         
-        // Y-axis grid (speed)
+        // Y-axis grid (metric)
         const speedSteps = 5;
         for (let i = 0; i <= speedSteps; i++) {
-            const speed = speedMin + (speedMax - speedMin) * (i / speedSteps);
-            const y = speedToY(speed);
+            const val = valueMin + (valueMax - valueMin) * (i / speedSteps);
+            const y = valueToY(val);
             
             ctx.beginPath();
             ctx.moveTo(padding, y);
             ctx.lineTo(padding + chartWidth, y);
             ctx.stroke();
             
-            ctx.fillText(speed.toFixed(1) + ' km/h', 5, y + 4);
+            ctx.fillText(val.toFixed(1), 5, y + 4);
         }
         
         // X-axis grid (time)
@@ -1540,11 +1746,11 @@ class GeoVisualization {
             let validPoints = 0;
             vehicleData.forEach((point, index) => {
                 const x = timeToX(point.collectiontime);
-                const y = speedToY(point.speed);
+                const y = valueToY(point[metricKey]);
                 
                 // Debug: log first few points of first vehicle
                 if (colorIndex === 0 && index < 3) {
-                    console.log(`Vehicle ${vehicleId} Point ${index}: time=${point.time_stamp}, speed=${point.speed}, collectiontime=${point.collectiontime}, x=${x}, y=${y}`);
+                    console.log(`Vehicle ${vehicleId} Point ${index}: time=${point.time_stamp}, ${metricKey}=${point[metricKey]}, collectiontime=${point.collectiontime}, x=${x}, y=${y}`);
                 }
                 
                 // Check if coordinates are valid
@@ -1572,7 +1778,7 @@ class GeoVisualization {
             ctx.fillStyle = colorStr;
             vehicleData.forEach((point) => {
                 const x = timeToX(point.collectiontime);
-                const y = speedToY(point.speed);
+                const y = valueToY(point[metricKey]);
                 
                 // Check if coordinates are valid
                 if (isNaN(x) || isNaN(y)) {
@@ -1613,7 +1819,7 @@ class GeoVisualization {
         // Draw axis labels
         ctx.fillStyle = '#333333';
         ctx.font = '14px Arial';
-        ctx.fillText('Speed (km/h)', 10, 30);
+        ctx.fillText(`${metricKey}`, 10, 30);
         ctx.fillText('Time', canvas.width / 2 - 20, canvas.height - 10);
         
         // Draw border

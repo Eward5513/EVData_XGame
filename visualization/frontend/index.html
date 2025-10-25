@@ -69,8 +69,8 @@
                         <option value="" selected>All Directions</option>
                         <option value="A1">A1 (N-S Straight)</option>
                         <option value="A2">A2 (N-S Left Turn)</option>
-                        <option value="A3">A3 (E-W Straight)</option>
-                        <option value="A4">A4 (E-W Left Turn)</option>
+                        <option value="B1">B1 (E-W Straight)</option>
+                        <option value="B2">B2 (E-W Left Turn)</option>
                         <option value="C">C (Right Turns & Other)</option>
                     </select>
                 </div>
@@ -89,8 +89,8 @@
                         <option value="" selected>All Directions</option>
                         <option value="A1">A1 (N-S Straight)</option>
                         <option value="A2">A2 (N-S Left Turn)</option>
-                        <option value="A3">A3 (E-W Straight)</option>
-                        <option value="A4">A4 (E-W Left Turn)</option>
+                        <option value="B1">B1 (E-W Straight)</option>
+                        <option value="B2">B2 (E-W Left Turn)</option>
                         <option value="C">C (Right Turns & Other)</option>
                     </select>
                 </div>
@@ -250,8 +250,8 @@
                         <option value="" selected>All Directions</option>
                         <option value="A1">A1 (N-S Straight)</option>
                         <option value="A2">A2 (N-S Left Turn)</option>
-                        <option value="A3">A3 (E-W Straight)</option>
-                        <option value="A4">A4 (E-W Left Turn)</option>
+                        <option value="B1">B1 (E-W Straight)</option>
+                        <option value="B2">B2 (E-W Left Turn)</option>
                         <option value="C">C (Right Turns & Other)</option>
                     </select>
                 </div>
@@ -270,8 +270,8 @@
                         <option value="" selected>All Directions</option>
                         <option value="A1">A1 (N-S Straight)</option>
                         <option value="A2">A2 (N-S Left Turn)</option>
-                        <option value="A3">A3 (E-W Straight)</option>
-                        <option value="A4">A4 (E-W Left Turn)</option>
+                        <option value="B1">B1 (E-W Straight)</option>
+                        <option value="B2">B2 (E-W Left Turn)</option>
                         <option value="C">C (Right Turns & Other)</option>
                     </select>
                 </div>
@@ -298,6 +298,20 @@
             </div>
             
             <div class="panel-section">
+                <label for="speedSegId">Seg ID:</label>
+                <input type="number" id="speedSegId" placeholder="Optional" style="width: 80px;">
+                <label style="margin-left:10px;" for="speedMetric">Metric:</label>
+                <select id="speedMetric" style="width: 180px;">
+                    <option value="speed" selected>speed</option>
+                    <option value="acceleratorpedal">acceleratorpedal</option>
+                    <option value="brakestatus">brakestatus</option>
+                    <option value="gearnum">gearnum</option>
+                    <option value="havebrake">havebrake</option>
+                    <option value="havedriver">havedriver</option>
+                </select>
+            </div>
+            
+            <div class="panel-section">
                 <button id="analyzeSpeedBtn" class="btn btn-primary">Analyze Speed</button>
             </div>
             
@@ -314,6 +328,8 @@
             </div>
             </div>
         </div>
+
+        
     </div>
 
     <!-- Traffic Light Timeline Modal -->
