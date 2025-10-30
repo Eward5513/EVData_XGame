@@ -1,705 +1,470 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import json
 import math
-import os
-from collections import Counter
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Optional
+from typing import Dict, List, Tuple
 
+import os
 import numpy as np
 import pandas as pd
-from shapely.geometry import Point, LineString
-from shapely.ops import unary_union
+from sklearn.cluster import KMeans
+rng = np.random.default_rng(42)
 
-# Optional dependency: scikit-learn (DBSCAN). Fallback provided if missing.
-try:
-    from sklearn.cluster import DBSCAN
-    _HAVE_SKLEARN = True
-except Exception:
-    _HAVE_SKLEARN = False
+# ---------- Configuration (hardcoded values) ----------
+CSV_PATHS = ['A0003_split.csv', 'A0008_split.csv']  # Input CSVs to process
+# Optional global defaults (fallback if road-specific values below are missing)
+LAT0 = None
+LON0 = None
+# Intersection origin hints: seeded from analyze_direction.py (lat, lon)
+INTERSECTION_ORIGINS = {
+    'A0003': {'lat': 32.345137, 'lon': 123.152539},
+    'A0008': {'lat': 32.327137, 'lon': 123.181261},
+}
+K = 4                        # Number of approach direction clusters
+V_STOP = 0.5                 # Stationary speed threshold (m/s)
+V_GO = 1.5                   # Start-moving speed threshold (m/s)
+LOOKAHEAD_S = 5.0            # Lookahead window for detecting start (s)
+RANSAC_THRESH = 1.5          # RANSAC inlier distance threshold (m)
+LATERAL_BAND = 2.0           # Lateral band width for stop-line estimation (m)
+STOP_QUANTILE = 0.15         # Quantile for conservative stop-line estimate
+WRITE_GEOJSON = False        # If True, also write a GeoJSON per CSV
 
-# -----------------------------
-# Geodesy helpers
-# -----------------------------
-def lonlat_to_local_xy(lon: np.ndarray, lat: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    lat0 = math.radians(float(np.nanmean(lat))) if np.isfinite(lat).any() else 0.0
-    R = 6371000.0
-    x = np.radians(lon) * R * math.cos(lat0)
-    y = np.radians(lat) * R
-    return x, y
+# ---------- Utilities ----------
 
-def local_xy_to_lonlat(x: np.ndarray, y: np.ndarray, lat0_deg: float) -> Tuple[np.ndarray, np.ndarray]:
-    lat0 = math.radians(lat0_deg)
-    R = 6371000.0
-    lon = np.degrees(x / (R * math.cos(lat0)))
-    lat = np.degrees(y / R)
+def lonlat_to_xy(lon, lat, lon0, lat0):
+    """
+    Approximate local tangent-plane projection (meters) centered at (lon0, lat0).
+    """
+    # Earth radius (approximate)
+    R = 6378137.0
+    lat0_rad = np.deg2rad(lat0)
+    mx = (np.deg2rad(lon - lon0) * R * np.cos(lat0_rad))
+    my = (np.deg2rad(lat - lat0) * R)
+    return mx, my
+
+def xy_to_lonlat(x, y, lon0, lat0):
+    R = 6378137.0
+    lat0_rad = np.deg2rad(lat0)
+    lon = lon0 + np.rad2deg(x / (R * np.cos(lat0_rad)))
+    lat = lat0 + np.rad2deg(y / R)
     return lon, lat
 
-def angle_of(vecx: float, vecy: float) -> float:
-    a = math.atan2(vecy, vecx)
-    if a < 0:
-        a += 2 * math.pi
+def angle_wrap_deg(a):
+    """Wrap angle into [-180, 180)."""
+    a = (a + 180.0) % 360.0 - 180.0
     return a
 
-def circmean(angles: np.ndarray) -> float:
-    return math.atan2(np.sin(angles).mean(), np.cos(angles).mean()) % (2 * math.pi)
+def heading_from_xy(dx, dy):
+    """Heading with east=0°, counter-clockwise positive: atan2(dy, dx)."""
+    return (np.rad2deg(np.arctan2(dy, dx)) + 360.0) % 360.0
 
-# -----------------------------
-# Optional manual center seed (env override)
-# -----------------------------
-def get_manual_center_seed(lat0_deg: float) -> Optional[Tuple[float, float]]:
-    try:
-        lon_str = os.environ.get("XGAME_CENTER_LON")
-        lat_str = os.environ.get("XGAME_CENTER_LAT")
-        if not lon_str or not lat_str:
-            return None
-        lon = float(lon_str)
-        lat = float(lat_str)
-        # convert lon/lat to local XY using dataset's lat0
-        R = 6371000.0
-        lat0 = math.radians(lat0_deg)
-        x = math.radians(lon) * R * math.cos(lat0)
-        y = math.radians(lat) * R
-        return float(x), float(y)
-    except Exception:
-        return None
+def robust_quantile(values, q, max_iters=2):
+    """Quantile after IQR-based outlier clipping (robust to extremes)."""
+    v = np.asarray(values).copy()
+    if len(v) == 0:
+        return np.nan
+    for _ in range(max_iters):
+        q1, q3 = np.quantile(v, [0.25, 0.75])
+        iqr = q3 - q1
+        lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+        v = v[(v >= lo) & (v <= hi)]
+        if len(v) == 0:
+            break
+    if len(v) == 0:
+        return np.nan
+    return float(np.quantile(v, q))
 
-def refine_center_near_seed(x: np.ndarray, y: np.ndarray,
-                            speed: np.ndarray, curvature: np.ndarray,
-                            seed_xy: Tuple[float, float], radius: float = 40.0) -> Tuple[float, float]:
-    cx0, cy0 = seed_xy
-    sp = speed.astype(float)
-    if np.nanmedian(sp) > 40.0:
-        sp = sp / 3.6
-    sp_clip = np.clip(sp, 0.0, np.nanmax(sp) if np.isfinite(sp).any() else 1.0)
-    slow_w = 1.0 / (1.0 + sp_clip)
-    curv = curvature.astype(float)
-    curv[~np.isfinite(curv)] = 0.0
-    curv_norm = curv / (np.nanmax(curv) + 1e-12) if np.nanmax(curv) > 0 else np.zeros_like(curv)
-    w = 0.6 * slow_w + 0.4 * curv_norm + 0.05
-    d2 = (x - cx0)**2 + (y - cy0)**2
-    neigh = d2 <= (radius**2)
-    if not np.any(neigh):
-        return cx0, cy0
-    wloc = w[neigh]
-    xloc = x[neigh]
-    yloc = y[neigh]
-    s = float(np.nansum(wloc))
-    if s <= 0:
-        return cx0, cy0
-    return float(np.nansum(wloc * xloc) / s), float(np.nansum(wloc * yloc) / s)
-
-# -----------------------------
-# Robust center by segment intersections (voting)
-# -----------------------------
-def _line_intersection(p1: Tuple[float,float], p2: Tuple[float,float],
-                       p3: Tuple[float,float], p4: Tuple[float,float]) -> Optional[Tuple[float,float]]:
-    x1, y1 = p1; x2, y2 = p2; x3, y3 = p3; x4, y4 = p4
-    denom = (x1-x2)*(y3-y4) - (y1-y2)*(x3-x4)
-    if abs(denom) < 1e-9:
-        return None
-    px = ((x1*y2 - y1*x2)*(x3-x4) - (x1-x2)*(x3*y4 - y3*x4)) / denom
-    py = ((x1*y2 - y1*x2)*(y3-y4) - (y1-y2)*(x3*y4 - y3*x4)) / denom
-    if not (math.isfinite(px) and math.isfinite(py)):
-        return None
-    return (float(px), float(py))
-
-def _estimate_center_by_segment_votes(x: np.ndarray, y: np.ndarray,
-                                      speed: np.ndarray, curvature: np.ndarray) -> Optional[Tuple[float,float]]:
-    n = x.size
-    if n < 8:
-        return None
-
-    sp = speed.astype(float).copy()
-    if np.nanmedian(sp) > 40.0:
-        sp = sp / 3.6
-    sp[~np.isfinite(sp)] = np.nan
-    sp_clip = np.clip(sp, 0.0, np.nanmax(sp) if np.isfinite(sp).any() else 1.0)
-    slow_w = 1.0 / (1.0 + sp_clip)
-
-    curv = curvature.astype(float).copy()
-    curv[~np.isfinite(curv)] = 0.0
-    curv_norm = curv / (np.nanmax(curv) + 1e-12) if np.nanmax(curv) > 0 else np.zeros_like(curv)
-
-    # Candidate mask: slow or high curvature
-    mask_cand = (sp_clip <= np.nanpercentile(sp_clip, 50.0)) | (curv_norm >= np.nanpercentile(curv_norm, 60.0))
-
-    # Build short segments
-    segments = []  # (x1,y1,x2,y2, heading, length, weight)
-    step = 3
-    for i in range(0, n - step):
-        j = i + step
-        if not (mask_cand[i] and mask_cand[j]):
-            continue
-        x1, y1 = float(x[i]), float(y[i])
-        x2, y2 = float(x[j]), float(y[j])
-        vx = x2 - x1; vy = y2 - y1
-        L = math.hypot(vx, vy)
-        if not (8.0 <= L <= 120.0):
-            continue
-        hd = math.atan2(vy, vx)
-        w = 0.7 * float(0.5*(slow_w[i] + slow_w[j])) + 0.3 * float(0.5*(curv_norm[i] + curv_norm[j]))
-        segments.append((x1,y1,x2,y2, hd, L, w))
-
-    if len(segments) < 20:
-        return None
-
-    # Keep top segments by weight to limit cost
-    segments.sort(key=lambda t: t[6], reverse=True)
-    segments = segments[:800]
-
-    # Pair intersections with angular diversity
-    intersections = []  # (px,py, weight)
-    m = len(segments)
-    for a in range(m):
-        x1,y1,x2,y2,h1,L1,w1 = segments[a]
-        for b in range(a+1, min(m, a+40)):
-            x3,y3,x4,y4,h2,L2,w2 = segments[b]
-            da = abs((h1 - h2 + math.pi) % (2*math.pi) - math.pi)
-            if da < math.radians(45) or da > math.radians(135):
-                continue
-            ip = _line_intersection((x1,y1),(x2,y2),(x3,y3),(x4,y4))
-            if ip is None:
-                continue
-            intersections.append((ip[0], ip[1], w1*w2))
-
-    if len(intersections) < 30:
-        return None
-
-    # Vote with a coarse grid
-    xs = np.array([p[0] for p in intersections], dtype=np.float64)
-    ys = np.array([p[1] for p in intersections], dtype=np.float64)
-    ws = np.array([p[2] for p in intersections], dtype=np.float64)
-    xmin, xmax = float(np.nanmin(xs)), float(np.nanmax(xs))
-    ymin, ymax = float(np.nanmin(ys)), float(np.nanmax(ys))
-    cell = 5.0
-    nx = max(1, min(400, int((xmax - xmin) / cell)))
-    ny = max(1, min(400, int((ymax - ymin) / cell)))
-    H, xe, ye = np.histogram2d(xs, ys, bins=[nx, ny], range=[[xmin,xmax],[ymin,ymax]], weights=ws)
-    if H.size == 0:
-        return None
-    idx = np.unravel_index(int(np.nanargmax(H)), H.shape)
-    cx0 = 0.5 * (xe[idx[0]] + xe[idx[0]+1])
-    cy0 = 0.5 * (ye[idx[1]] + ye[idx[1]+1])
-
-    # Refine with weighted centroid of nearby intersections
-    d2 = (xs - cx0)**2 + (ys - cy0)**2
-    neigh = d2 <= (25.0**2)
-    if np.any(neigh) and np.nansum(ws[neigh]) > 0:
-        cx = float(np.nansum(ws[neigh] * xs[neigh]) / np.nansum(ws[neigh]))
-        cy = float(np.nansum(ws[neigh] * ys[neigh]) / np.nansum(ws[neigh]))
-        return (cx, cy)
-    return (cx0, cy0)
-
-# -----------------------------
-# Data containers
-# -----------------------------
-@dataclass
-class Arm:
-    id: int
-    angle: float
-    tip_xy: Tuple[float, float]
-    node_xy: Tuple[float, float]
+# ---------- Line representation and fitting ----------
 
 @dataclass
-class MovementEdge:
-    u: int
-    v: int
-    weight: int
-    geometry: LineString
+class Line:
+    n: np.ndarray   # 法向单位向量 shape (2,)
+    rho: float      # 截距, n^T x = rho
+    t: np.ndarray   # 切向单位向量 (与 n 垂直)
+    angle_deg: float  # 切向角度（以东为0逆时针）
 
-# -----------------------------
-# Time parsing (NumPy 2 safe)
-# -----------------------------
-def parse_time_seconds(df: pd.DataFrame) -> np.ndarray:
+def pca_tls_direction(points: np.ndarray, weights: np.ndarray=None) -> np.ndarray:
     """
-    Return a float64 array of seconds since epoch (NaN if unknown).
-    Tries 'time_stamp' as clock time first (HH:MM:SS), then 'collectiontime' ms,
-    then full datetime in 'date' if possible.
+    TLS principal direction (tangent) from 2D points (N,2).
+    Returns a unit vector t.
     """
-    n = len(df)
-    out = np.full(n, np.nan, dtype=np.float64)
-
-    # Try epoch seconds in a numeric 'time_stamp' (if user provided)
-    if "time_stamp" in df.columns:
-        ts = df["time_stamp"]
-        if pd.api.types.is_numeric_dtype(ts):
-            tsv = pd.to_numeric(ts, errors="coerce").to_numpy(np.float64)
-            # If values look like ms, convert
-            if np.nanmedian(tsv) > 1e10:
-                tsv = tsv / 1000.0
-            out = tsv
-        else:
-            # Try parse as HH:MM:SS paired with date
-            if "date" in df.columns:
-                dt = pd.to_datetime(df["date"].astype(str) + " " + ts.astype(str),
-                                    errors="coerce")
-                out = (dt.astype("int64") / 1e9).to_numpy(np.float64)
-
-    # Fallback: collectiontime (ms)
-    if np.isnan(out).all() and "collectiontime" in df.columns:
-        ms = pd.to_numeric(df["collectiontime"], errors="coerce")
-        dt = pd.to_datetime(ms, unit="ms", errors="coerce")
-        out = (dt.astype("int64") / 1e9).to_numpy(np.float64)
-
-    # Fallback: date
-    if np.isnan(out).all() and "date" in df.columns:
-        dt = pd.to_datetime(df["date"], errors="coerce")
-        out = (dt.astype("int64") / 1e9).to_numpy(np.float64)
-
-    return out
-
-# -----------------------------
-# Heading & curvature
-# -----------------------------
-def compute_heading_and_curvature(x: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    if len(x) < 3:
-        headings = np.zeros_like(x, dtype=np.float64)
-        curv = np.zeros_like(x, dtype=np.float64)
-        return headings, curv
-    dx = np.gradient(x.astype(np.float64))
-    dy = np.gradient(y.astype(np.float64))
-    headings = np.arctan2(dy, dx)
-    headings_unwrapped = np.unwrap(headings)
-    dhead = np.gradient(headings_unwrapped)
-    curv = np.abs(dhead)
-    headings = (headings + 2 * np.pi) % (2 * np.pi)
-    return headings, curv
-
-# -----------------------------
-# Center detection with fallback
-# -----------------------------
-def _grid_peak_center(pts: np.ndarray, cell: float = 5.0) -> Tuple[float, float]:
-    """Simple 2D grid histogram peak as a fallback when sklearn is unavailable."""
-    if len(pts) == 0:
-        return 0.0, 0.0
-    xmin, ymin = pts.min(axis=0)
-    xmax, ymax = pts.max(axis=0)
-    nx = max(1, int((xmax - xmin) / cell))
-    ny = max(1, int((ymax - ymin) / cell))
-    H, xe, ye = np.histogram2d(pts[:,0], pts[:,1], bins=[nx, ny])
-    idx = np.unravel_index(np.argmax(H), H.shape)
-    cx = 0.5 * (xe[idx[0]] + xe[idx[0]+1])
-    cy = 0.5 * (ye[idx[1]] + ye[idx[1]+1])
-    return float(cx), float(cy)
-
-def detect_intersection_center(x: np.ndarray, y: np.ndarray, speed: np.ndarray,
-                               curvature: np.ndarray,
-                               low_speed_kmh: float = 10.0,
-                               high_curv_thresh: float = 0.15) -> Tuple[float, float]:
-    """Robust center using heading-variance density scoring + refinement.
-
-    - Build grid; in each cell accumulate: count, sum of cos/sin of heading, mean curvature, mean slow-speed weight.
-    - Score cell = count * (w1 * heading_variance + w2 * mean_curv + w3 * mean_slow).
-    - Pick best cell center; refine with weighted centroid of neighbors.
-    """
-    # Prepare inputs
-    xf = x.astype(float)
-    yf = y.astype(float)
-    if not (np.isfinite(xf).any() and np.isfinite(yf).any()):
-        return float(np.nanmean(x)), float(np.nanmean(y))
-
-    # Compute headings locally (robust to small arrays)
-    if xf.size >= 3:
-        dx = np.gradient(xf)
-        dy = np.gradient(yf)
-        hd = np.arctan2(dy, dx)
+    if weights is None:
+        w = np.ones(len(points))
     else:
-        hd = np.zeros_like(xf)
+        w = weights
+    w = w / (w.sum() + 1e-12)
+    mu = (points * w[:, None]).sum(axis=0)
+    X = points - mu
+    C = (X * w[:, None]).T @ X
+    # 主特征向量对应最大特征值
+    vals, vecs = np.linalg.eigh(C)
+    t = vecs[:, np.argmax(vals)]
+    t = t / (np.linalg.norm(t) + 1e-12)
+    return t
 
-    sp = speed.astype(float)
-    if np.nanmedian(sp) > 40.0:
-        sp = sp / 3.6
-    curv = curvature.astype(float)
-    curv[~np.isfinite(curv)] = 0.0
+def line_from_points_tls(points: np.ndarray, weights: np.ndarray=None) -> Line:
+    """
+    TLS-fit line in normal form: n^T x = rho.
+    """
+    t = pca_tls_direction(points, weights)
+    n = np.array([-t[1], t[0]])
+    # Use weighted median of normal projections for rho (robust)
+    if weights is None:
+        weights = np.ones(len(points))
+    proj = points @ n
+    rho = robust_quantile(np.repeat(proj, repeats=np.maximum(1, weights.astype(int))), 0.5)
+    if np.isnan(rho):
+        rho = float(np.median(proj))
+    angle_deg = (np.rad2deg(np.arctan2(t[1], t[0])) + 360.0) % 360.0
+    return Line(n=n, rho=rho, t=t, angle_deg=angle_deg)
 
-    # Slow-speed weight in [0,1]
-    sp_clip = np.clip(sp, 0.0, np.nanmax(sp) if np.isfinite(sp).any() else 1.0)
-    slow_w = 1.0 / (1.0 + sp_clip)
-
-    # Bounding box
-    xmin, xmax = float(np.nanmin(xf)), float(np.nanmax(xf))
-    ymin, ymax = float(np.nanmin(yf)), float(np.nanmax(yf))
-    if not np.isfinite([xmin, xmax, ymin, ymax]).all() or xmax <= xmin or ymax <= ymin:
-        return float(np.nanmean(x)), float(np.nanmean(y))
-
-    # Grid resolution ~5m
-    cell = 5.0
-    nx = max(1, min(400, int((xmax - xmin) / cell)))
-    ny = max(1, min(400, int((ymax - ymin) / cell)))
-
-    # Digitize points into bins
-    bx = np.clip(np.digitize(xf, np.linspace(xmin, xmax, nx+1)) - 1, 0, nx-1)
-    by = np.clip(np.digitize(yf, np.linspace(ymin, ymax, ny+1)) - 1, 0, ny-1)
-
-    # Accumulators
-    C = np.zeros((nx, ny), dtype=np.float64)
-    Sx = np.zeros((nx, ny), dtype=np.float64)
-    Sy = np.zeros((nx, ny), dtype=np.float64)
-    Cur = np.zeros((nx, ny), dtype=np.float64)
-    SSp = np.zeros((nx, ny), dtype=np.float64)
-
-    cosh = np.cos(hd)
-    sinh = np.sin(hd)
-
-    for i in range(xf.size):
-        ii = int(bx[i]); jj = int(by[i])
-        C[ii, jj] += 1.0
-        Sx[ii, jj] += cosh[i]
-        Sy[ii, jj] += sinh[i]
-        Cur[ii, jj] += curv[i]
-        SSp[ii, jj] += slow_w[i]
-
-    with np.errstate(invalid='ignore', divide='ignore'):
-        R = np.sqrt(Sx*Sx + Sy*Sy) / np.maximum(C, 1.0)
-        heading_var = 1.0 - np.clip(R, 0.0, 1.0)  # [0,1]
-        mean_curv = Cur / np.maximum(C, 1.0)
-        mean_slow = SSp / np.maximum(C, 1.0)
-
-    # Score: prioritize heading variance (direction diversity), then curvature, then slow speed
-    w1, w2, w3 = 0.7, 0.2, 0.1
-    Score = C * (w1 * heading_var + w2 * mean_curv + w3 * mean_slow)
-
-    if not np.isfinite(Score).any() or np.nanmax(Score) <= 0:
-        return float(np.nanmean(x)), float(np.nanmean(y))
-
-    idx = np.unravel_index(int(np.nanargmax(Score)), Score.shape)
-    xe = np.linspace(xmin, xmax, nx+1)
-    ye = np.linspace(ymin, ymax, ny+1)
-    cx0 = 0.5 * (xe[idx[0]] + xe[idx[0]+1])
-    cy0 = 0.5 * (ye[idx[1]] + ye[idx[1]+1])
-
-    # Refine center: weighted centroid of neighbors within 30m using per-point weights derived from the cell scores
-    # Assign each point its cell score
-    point_score = Score[bx, by]
-    d2 = (xf - cx0)**2 + (yf - cy0)**2
-    neigh = d2 <= (30.0**2)
-    if np.any(neigh) and np.isfinite(point_score[neigh]).any():
-        wpt = point_score[neigh]
-        xloc = xf[neigh]
-        yloc = yf[neigh]
-        s = float(np.nansum(wpt))
-        if s > 0:
-            cx_ref = float(np.nansum(wpt * xloc) / s)
-            cy_ref = float(np.nansum(wpt * yloc) / s)
-            cx0, cy0 = cx_ref, cy_ref
-
-    return (cx0, cy0)
-
-# -----------------------------
-# Arm detection on annulus
-# -----------------------------
-@dataclass
-class ArmParams:
-    inner_r: float = 25.0
-    outer_r: float = 120.0
-    angle_bin_deg: float = 12.0
-    min_bin_pts: int = 50
-
-def detect_arms(x: np.ndarray, y: np.ndarray, cx: float, cy: float, p: ArmParams) -> List[Arm]:
-    dx = x - cx
-    dy = y - cy
-    r = np.hypot(dx, dy)
-    ang = (np.arctan2(dy, dx) + 2*np.pi) % (2*np.pi)
-    mask = (r >= p.inner_r) & (r <= p.outer_r)
-    ang_m = ang[mask]
-    r_m = r[mask]
-    dx_m = dx[mask]
-    dy_m = dy[mask]
-    if ang_m.size < 30:
-        return []
-
-    bin_rad = math.radians(p.angle_bin_deg)
-    bins = int(math.ceil(2*np.pi / bin_rad))
-    hist, edges = np.histogram(ang_m, bins=bins, range=(0, 2*np.pi))
-    smooth = np.convolve(hist, np.ones(3)/3.0, mode="same")
-
-    # Adaptive threshold: favor clear peaks but allow lower counts when data is sparse
-    mean_cnt = float(np.mean(smooth))
-    std_cnt = float(np.std(smooth))
-    thr_adaptive = int(mean_cnt + 0.5 * std_cnt)
-    thr_floor = int(0.003 * ang_m.size)
-    thr = max(min(p.min_bin_pts, int(0.02 * ang_m.size)), thr_adaptive, thr_floor)
-
-    peaks: List[int] = []
-    for i in range(bins):
-        prev_i = (i-1) % bins
-        next_i = (i+1) % bins
-        if smooth[i] > smooth[prev_i] and smooth[i] > smooth[next_i] and smooth[i] >= thr:
-            peaks.append(i)
-
-    def build_arms_from_bins(bin_indices: List[int]) -> List[Arm]:
-        out: List[Arm] = []
-        for bi in bin_indices:
-            a0 = edges[bi]
-            a1 = edges[(bi+1) % len(edges)]
-            if a1 <= a0:
-                a1 += 2*np.pi
-            sel = (ang_m >= a0) & (ang_m < a1)
-            if not np.any(sel):
-                continue
-            mu = circmean(ang_m[sel])
-            j = int(np.argmax(r_m[sel]))
-            tip = (cx + float(dx_m[sel][j]), cy + float(dy_m[sel][j]))
-            node = (cx + p.inner_r * math.cos(mu), cy + p.inner_r * math.sin(mu))
-            out.append(Arm(id=len(out), angle=mu, tip_xy=tip, node_xy=node))
-        for i, a in enumerate(out):
-            a.id = i
-        return out
-
-    arms = build_arms_from_bins(peaks)
-
-    # Fallback: ensure at least 4 arms for cross intersections by selecting top separated bins
-    if len(arms) < 4:
-        order = list(np.argsort(smooth)[::-1])
-        chosen: List[int] = []
-        for bi in order:
-            if smooth[bi] <= 0:
-                break
-            ok = True
-            for cj in chosen:
-                # enforce separation to avoid adjacent bins (at least ~2 bins apart)
-                if min(abs(bi - cj), bins - abs(bi - cj)) < 2:
-                    ok = False
-                    break
-            if ok:
-                chosen.append(int(bi))
-            if len(chosen) >= 4:
-                break
-        arms = build_arms_from_bins(chosen)
-
-    return arms
-
-# -----------------------------
-# Movements
-# -----------------------------
-def label_arm(angle: float, arms: List[Arm]) -> Optional[int]:
-    if not arms:
-        return None
-    # small circular distance
-    diffs = [min(abs(angle - a.angle), 2*np.pi - abs(angle - a.angle)) for a in arms]
-    idx = int(np.argmin(diffs))
-    return arms[idx].id
-
-def extract_movements_per_traj(x: np.ndarray, y: np.ndarray,
-                               center: Tuple[float,float],
-                               inner_r: float,
-                               arms: List[Arm]) -> Optional[Tuple[int,int]]:
-    cx, cy = center
-    r = np.hypot(x - cx, y - cy)
-    if r.size < 3:
-        return None
-    inside = r < inner_r
-    if not inside.any():
-        return None
-    # first enter
-    first_in = int(np.argmax(inside))
-    after = inside[first_in:]
-    if after.all():
-        return None
-    first_out = first_in + int(np.argmax(~after))
-
-    # angles before entering
-    s0 = max(0, first_in-5); e0 = first_in
-    if e0 <= s0:
-        return None
-    vx0 = np.gradient(x[s0:e0+1]); vy0 = np.gradient(y[s0:e0+1])
-    ang0 = angle_of(float(np.nanmean(vx0)), float(np.nanmean(vy0)))
-    arm_in = label_arm(ang0, arms)
-
-    # angles after leaving
-    s1 = first_out; e1 = min(x.size-1, first_out+5)
-    if e1 <= s1 or (e1 - s1) < 1:
-        return None
-    vx1 = np.gradient(x[s1:e1+1]); vy1 = np.gradient(y[s1:e1+1])
-    ang1 = angle_of(float(np.nanmean(vx1)), float(np.nanmean(vy1)))
-    arm_out = label_arm(ang1, arms)
-
-    if arm_in is None or arm_out is None or arm_in == arm_out:
-        return None
-    return (arm_in, arm_out)
-
-def build_edges(arms: List[Arm], movements: List[Tuple[int,int]], min_support: int = 5) -> List[MovementEdge]:
-    edges: List[MovementEdge] = []
-    counts = Counter(movements)
-    for (u, v), w in counts.items():
-        if w < min_support:
+def ransac_line(points: np.ndarray, thresh=1.5, iters=300, min_inliers=6) -> Tuple[Line, np.ndarray]:
+    """
+    Fit a line with RANSAC, then refine with TLS.
+    Returns a Line and a boolean inlier mask.
+    """
+    N = len(points)
+    if N < 2:
+        raise ValueError("Not enough points for RANSAC")
+    best_inliers = None
+    best_count = -1
+    idx = np.arange(N)
+    for _ in range(iters):
+        i, j = rng.choice(idx, size=2, replace=False)
+        p1, p2 = points[i], points[j]
+        v = p2 - p1
+        if np.linalg.norm(v) < 1e-3:
             continue
-        p0 = np.array(arms[u].node_xy, dtype=np.float64)
-        p2 = np.array(arms[v].node_xy, dtype=np.float64)
-        c = 0.5*(p0 + p2)  # simple mid control point
-        ts = np.linspace(0.0, 1.0, 20, dtype=np.float64)
-        pts = (1-ts)[:,None]**2 * p0 + 2*(1-ts)[:,None]*ts[:,None]*c + (ts[:,None]**2)*p2
-        line = LineString(pts.tolist())
-        edges.append(MovementEdge(u=u, v=v, weight=int(w), geometry=line))
-    return edges
+        t = v / np.linalg.norm(v)
+        n = np.array([-t[1], t[0]])
+        rho = float(n @ p1)
+        d = np.abs(points @ n - rho)
+        inliers = d <= thresh
+        count = inliers.sum()
+        if count > best_count:
+            best_count = count
+            best_inliers = inliers
+    if best_inliers is None or best_count < max(min_inliers, 2):
+        # Degenerate case: use TLS on all points
+        line = line_from_points_tls(points)
+        inliers = np.ones(N, dtype=bool)
+        return line, inliers
+    # TLS refinement
+    line = line_from_points_tls(points[best_inliers])
+    return line, best_inliers
 
-# -----------------------------
-# Export
-# -----------------------------
-def export_geojson(arms: List[Arm], edges: List[MovementEdge],
-                   cx: float, cy: float, lat0_deg: float, outfile: str):
-    feats = []
+def lsq_intersection_center(lines: List[Line], weights: List[float]=None) -> np.ndarray:
+    """
+    Least-squares intersection point of lines n_j^T x = rho_j.
+    """
+    if weights is None:
+        weights = [1.0] * len(lines)
+    A = np.zeros((2,2))
+    b = np.zeros(2)
+    for L, w in zip(lines, weights):
+        n = L.n.reshape(2,1)
+        A += w * (n @ n.T)
+        b += w * (L.rho * L.n)
+    c = np.linalg.solve(A, b)
+    return c  # shape (2,)
 
-    # center
-    clon, clat = local_xy_to_lonlat(np.array([cx], dtype=np.float64), np.array([cy], dtype=np.float64), lat0_deg)
-    feats.append({
-        "type": "Feature",
-        "geometry": {"type": "Point", "coordinates": [float(clon[0]), float(clat[0]) ]},
-        "properties": {"kind": "center"}
-    })
+# ---------- Main pipeline ----------
 
-    # nodes
-    if arms:
-        nx = np.array([a.node_xy[0] for a in arms], dtype=np.float64)
-        ny = np.array([a.node_xy[1] for a in arms], dtype=np.float64)
-        lon, lat = local_xy_to_lonlat(nx, ny, lat0_deg)
-        for i, a in enumerate(arms):
-            feats.append({
-                "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [float(lon[i]), float(lat[i]) ]},
-                "properties": {"kind": "arm_node", "id": int(a.id), "angle_rad": float(a.angle)}
-            })
-
-    # edges
-    for e in edges:
-        xy = np.asarray(e.geometry.coords, dtype=np.float64)
-        lon, lat = local_xy_to_lonlat(xy[:,0], xy[:,1], lat0_deg)
-        coords = [[float(lon[i]), float(lat[i])] for i in range(lon.size)]
-        feats.append({
-            "type": "Feature",
-            "geometry": {"type": "LineString", "coordinates": coords},
-            "properties": {"kind": "movement", "u": int(e.u), "v": int(e.v), "weight": int(e.weight)}
-        })
-
-    geojson = {"type": "FeatureCollection", "features": feats}
-    with open(outfile, "w", encoding="utf-8") as f:
-        json.dump(geojson, f, ensure_ascii=False, indent=2)
-
-# -----------------------------
-# Pipeline
-# -----------------------------
-def run_pipeline(df: pd.DataFrame,
-                 inner_r: float = 25.0,
-                 outer_r: float = 120.0,
-                 min_support: int = 3,
-                 ann_bin_deg: float = 12.0) -> Dict:
-    need_cols = ["vehicle_id","longitude","latitude"]
-    for c in need_cols:
-        if c not in df.columns:
-            raise ValueError(f"Missing required column: {c}")
-
-    df = df.copy()
-    df["t_sec"] = parse_time_seconds(df)
-    # groupwise stable sort by (vehicle_id, t_sec)
-    df = df.sort_values(["vehicle_id","t_sec"], kind="mergesort").reset_index(drop=True)
-
-    lon = pd.to_numeric(df["longitude"], errors="coerce").to_numpy(np.float64)
-    lat = pd.to_numeric(df["latitude"], errors="coerce").to_numpy(np.float64)
-    lat0 = float(np.nanmean(lat)) if np.isfinite(lat).any() else 0.0
-    X, Y = lonlat_to_local_xy(lon, lat)
-
-    headings, curv = compute_heading_and_curvature(X, Y)
-    speed = pd.to_numeric(df.get("speed", np.nan), errors="coerce").to_numpy(np.float64)
-
-    # Hardcoded center seed (lon/lat) anchored near the true intersection
-    lon_seed = 123.152697
-    lat_seed = 32.345166
-    R = 6371000.0
-    lat0_rad = math.radians(lat0)
-    seed_x = math.radians(lon_seed) * R * math.cos(lat0_rad)
-    seed_y = math.radians(lat_seed) * R
-    cx, cy = refine_center_near_seed(X, Y, speed, curv, (seed_x, seed_y), radius=50.0)
-
-    # Keep center anchored to the provided seed; skip automatic re-detection
-
-    # Adaptive annulus based on distance distribution to center
-    r_all = np.hypot(X - cx, Y - cy)
-    if np.isfinite(r_all).any():
-        try:
-            r_p15 = float(np.nanpercentile(r_all, 15))
-            r_p85 = float(np.nanpercentile(r_all, 85))
-            inner_r_eff = max(15.0, min(60.0, r_p15))
-            outer_r_eff = max(inner_r_eff + 40.0, min(200.0, r_p85))
-        except Exception:
-            inner_r_eff = inner_r
-            outer_r_eff = outer_r
+def compute_heading_per_track(df: pd.DataFrame, lon0: float, lat0: float) -> pd.DataFrame:
+    """
+    For each vehicle_id, sort by time and compute heading between consecutive points (degrees).
+    If 'collectiontime' (milliseconds) exists, prefer it; otherwise parse from 'date' + 'time_stamp'.
+    """
+    if 'collectiontime' in df.columns and df['collectiontime'].notna().any():
+        df['_t'] = pd.to_numeric(df['collectiontime'], errors='coerce')
     else:
-        inner_r_eff = inner_r
-        outer_r_eff = outer_r
+        # Attempt to parse from 'date' and 'time_stamp'
+        df['_t'] = pd.to_datetime(df['date'].astype(str) + ' ' + df['time_stamp'].astype(str), errors='coerce').astype('int64')//10**6
+    # Sort by vehicle and time
+    df = df.sort_values(['vehicle_id','_t']).copy()
+    # Compute heading
+    x, y = lonlat_to_xy(df['longitude'].values, df['latitude'].values, lon0, lat0)
+    df['_x'] = x
+    df['_y'] = y
+    df['_x_prev'] = df.groupby('vehicle_id')['_x'].shift(1)
+    df['_y_prev'] = df.groupby('vehicle_id')['_y'].shift(1)
+    dx = df['_x'] - df['_x_prev']
+    dy = df['_y'] - df['_y_prev']
+    hd = heading_from_xy(dx.fillna(0).values, dy.fillna(0).values)
+    df['heading_est'] = hd
+    return df
 
-    arms = detect_arms(
-        X, Y, cx, cy,
-        ArmParams(inner_r=inner_r_eff, outer_r=outer_r_eff,
-                  angle_bin_deg=ann_bin_deg, min_bin_pts=50)
-    )
+def extract_last_stop_points(df: pd.DataFrame,
+                             v_stop=0.5, v_go=1.5, lookahead_s=5.0) -> pd.DataFrame:
+    """
+    Extract the last stationary point before starting:
+    speed < v_stop and, within lookahead_s, a future speed > v_go.
+    """
+    # If speed is likely in km/h, attempt conversion based on distribution
+    sp = pd.to_numeric(df['speed'], errors='coerce').fillna(0).values
+    # Heuristic: if 95th percentile > 80, assume km/h and convert to m/s
+    if np.nanpercentile(sp, 95) > 80:
+        sp = sp / 3.6
+    df['_speed_ms'] = sp
 
-    movements: List[Tuple[int,int]] = []
-    for vid, g in df.groupby("vehicle_id", sort=False):
-        idx = g.index.to_numpy()
-        xg = X[idx]; yg = Y[idx]
-        mv = extract_movements_per_traj(xg, yg, (cx, cy), inner_r, arms)
-        if mv is not None:
-            movements.append(mv)
+    # Use millisecond timestamps
+    tms = pd.to_numeric(df['_t'], errors='coerce').fillna(0).values
+    df['_t_ms'] = tms
 
-    edges = build_edges(arms, movements, min_support=min_support)
+    # Scan each vehicle independently
+    out_rows = []
+    for vid, g in df.groupby('vehicle_id', sort=False):
+        g = g.sort_values('_t_ms')
+        arr_t = g['_t_ms'].values
+        arr_v = g['_speed_ms'].values
+        arr_x = g['_x'].values
+        arr_y = g['_y'].values
+        arr_hd = g['heading_est'].values
 
-    return {
-        "center_xy": (float(cx), float(cy)),
-        "lat0_deg": float(lat0),
-        "arms": arms,
-        "edges": edges,
-        "movements": movements
-    }
+        N = len(g)
+        i = 0
+        while i < N:
+            if arr_v[i] < v_stop:
+                # Look ahead within lookahead_s to see if speed exceeds v_go
+                j = i
+                moved = False
+                while j < N and (arr_t[j] - arr_t[i]) <= lookahead_s * 1000.0:
+                    if arr_v[j] > v_go:
+                        moved = True
+                        break
+                    j += 1
+                if moved:
+                    # Last stationary point before start: within [i, j),
+                    # choose the slowest and nearest to j
+                    k = np.argmax((arr_v[i:j] < v_stop).astype(int) * np.arange(j - i)) + i
+                    out_rows.append({
+                        'vehicle_id': vid,
+                        '_t_ms': arr_t[k],
+                        '_x': arr_x[k], '_y': arr_y[k],
+                        'heading': arr_hd[k]
+                    })
+                    # Jump to after j and continue
+                    i = j + 1
+                    continue
+            i += 1
+    return pd.DataFrame(out_rows)
+
+def cluster_directions(points_df: pd.DataFrame, K=4) -> np.ndarray:
+    """
+    Cluster headings into K approach directions.
+    If headings are missing, you could instead use polar angles to a provisional center.
+    """
+    hd = points_df['heading'].values % 360.0
+    # Embed onto the unit circle
+    X = np.c_[np.cos(np.deg2rad(hd)), np.sin(np.deg2rad(hd))]
+    km = KMeans(n_clusters=K, n_init=10, random_state=42)
+    labels = km.fit_predict(X)
+    return labels  # 0..K-1
+
+def fit_axis_per_cluster(points_df: pd.DataFrame, labels: np.ndarray,
+                         ransac_thresh=1.5) -> Dict[int, Dict]:
+    """
+    For each cluster, fit a line with RANSAC + TLS.
+    Returns: {label: {'line': Line, 'inliers_mask': mask, 'points': (N,2)}}.
+    """
+    result = {}
+    for lab in np.unique(labels):
+        g = points_df[labels == lab]
+        P = g[['_x','_y']].values
+        if len(P) < 4:
+            continue
+        line, inliers = ransac_line(P, thresh=ransac_thresh, iters=400, min_inliers= max(6, len(P)//3))
+        result[int(lab)] = {'line': line, 'inliers_mask': inliers, 'points': P}
+    return result
+
+def stopline_along_axis(points_df: pd.DataFrame, line: Line, center_xy: np.ndarray,
+                        lateral_band=2.0, use_quantile=0.15) -> float:
+    """
+    Compute the stop-line longitudinal coordinate s_stop (meters) along the given axis.
+    """
+    P = points_df[['_x','_y']].values
+    # Keep only points within a lateral band around the axis
+    lat_dev = np.abs(P @ line.n - line.rho)
+    keep = lat_dev <= lateral_band
+    if not np.any(keep):
+        return float('nan')
+    T = line.t
+    s = (P[keep] - center_xy.reshape(1,2)) @ T
+    if np.isnan(use_quantile):
+        s_stop = float(np.median(s))
+    else:
+        s_stop = robust_quantile(s, use_quantile)
+    return s_stop
 
 def main():
-    # 直接读取当前目录下的A0003.csv文件
-    input_file = "A0003.csv"
-    output_dir = "output"
-    
-    # 默认参数
-    inner_r = 25.0
-    outer_r = 120.0
-    min_support = 5
-    ann_bin_deg = 18.0
-    
-    print(f"读取输入文件: {input_file}")
-    if not os.path.exists(input_file):
-        raise FileNotFoundError(f"找不到文件: {input_file}")
-    
-    os.makedirs(output_dir, exist_ok=True)
-    df = pd.read_csv(input_file)
-    
-    print(f"数据文件加载成功!")
-    print(f"总行数: {len(df)}")
-    print(f"列名: {list(df.columns)}")
-    print(f"车辆数量: {df['vehicle_id'].nunique()}")
-    print(f"\n数据预览:")
-    print(df.head())
-    print(f"\n数据统计:")
-    print(df.describe())
+    for csv_path in CSV_PATHS:
+        base = os.path.basename(csv_path)
+        name_no_ext = base.rsplit('.', 1)[0]
+        road_id = name_no_ext.split('_')[0] if '_' in name_no_ext else name_no_ext
+        df = pd.read_csv(csv_path)
+        # Coarse origin for local projection; prefer predefined origins, otherwise use medians
+        origin_hint = INTERSECTION_ORIGINS.get(road_id, {})
+        lat_pref = origin_hint.get('lat', LAT0)
+        lon_pref = origin_hint.get('lon', LON0)
+        lat0 = lat_pref if lat_pref is not None else float(np.median(df['latitude']))
+        lon0 = lon_pref if lon_pref is not None else float(np.median(df['longitude']))
 
-    res = run_pipeline(df, inner_r=inner_r, outer_r=outer_r,
-                       min_support=min_support, ann_bin_deg=ann_bin_deg)
+        # 1) Compute headings and local coordinates
+        df = compute_heading_per_track(df, lon0, lat0)
 
-    gj = os.path.join(output_dir, "intersection_topology.geojson")
-    export_geojson(res["arms"], res["edges"], res["center_xy"][0], res["center_xy"][1],
-                   res["lat0_deg"], gj)
+        # 2) Extract last-stop points before moving
+        pts = extract_last_stop_points(df,
+                                       v_stop=V_STOP,
+                                       v_go=V_GO,
+                                       lookahead_s=LOOKAHEAD_S)
+        if len(pts) < 8:
+            print(f"[Warn] Only {len(pts)} candidate stop points found for {csv_path}; results may be unstable. "
+                  f"Consider relaxing thresholds or using a longer time window.")
 
-    summary = {
-        "arms": [{"id": a.id, "angle_deg": math.degrees(a.angle)} for a in res["arms"]],
-        "edge_supports": [{"u": e.u, "v": e.v, "weight": e.weight} for e in res["edges"]],
-        "movements_total": len(res["movements"])
-    }
-    with open(os.path.join(output_dir, "summary.json"), "w", encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
+        # 3) Cluster approach directions (default K=4)
+        labels = cluster_directions(pts, K=K)
 
-    print(f"\n结果已保存:")
-    print(f"  - {gj}")
-    print(f"  - {os.path.join(output_dir, 'summary.json')}")
-    print(f"\n检测到 {len(res['arms'])} 条路臂")
-    print(f"检测到 {len(res['movements'])} 个轨迹移动")
-    print(f"生成 {len(res['edges'])} 条移动边")
+        # 4) Fit an axis for each direction with RANSAC+TLS
+        axes = fit_axis_per_cluster(pts.assign(label=labels), labels, ransac_thresh=RANSAC_THRESH)
+
+        if len(axes) < 2:
+            raise RuntimeError(f"Fewer than 2 valid directions for {csv_path}; cannot compute center point. Check data or thresholds.")
+
+        # 5) Compute intersection center as the least-squares point
+        lines = [v['line'] for v in axes.values()]
+        weights = [float(v['inliers_mask'].sum()) for v in axes.values()]
+        center_xy = lsq_intersection_center(lines, weights=weights)
+        center_lon, center_lat = xy_to_lonlat(center_xy[0], center_xy[1], lon0, lat0)
+
+        # 6) Estimate stop-line position along each approach axis
+        out = {
+            'center_point': {
+                'x_m': float(center_xy[0]),
+                'y_m': float(center_xy[1]),
+                'lon': center_lon,
+                'lat': center_lat
+            },
+            'approaches': []
+        }
+
+        # For friendlier labels, map axis angles to compass sectors (coarse)
+        lab_to_dir = {}
+        for lab, v in axes.items():
+            ang = v['line'].angle_deg  # Axis angle: 0=East, 90=North
+            # Normalize to 0..360
+            a = ang % 360.0
+            # Coarse mapping
+            dirs = ['E','NE','N','NW','W','SW','S','SE']
+            idx = int(((a + 22.5) % 360) // 45)
+            lab_to_dir[lab] = dirs[idx]
+
+        for lab, v in axes.items():
+            line = v['line']
+            # Orient tangent outward: if mean(point - center) · t is negative, flip
+            P = v['points'][v['inliers_mask']]
+            mean_vec = P.mean(axis=0) - center_xy
+            if (mean_vec @ line.t) < 0:
+                line.t = -line.t
+                line.n = -line.n
+                line.rho = -line.rho
+                line.angle_deg = (line.angle_deg + 180.0) % 360.0
+
+            # Stop line estimate
+            s_stop = stopline_along_axis(pts.loc[labels==lab], line, center_xy,
+                                         lateral_band=LATERAL_BAND,
+                                         use_quantile=STOP_QUANTILE)
+
+            out['approaches'].append({
+                'cluster_label': int(lab),
+                'label_hint': lab_to_dir.get(lab, f'cluster_{lab}'),
+                'axis': {
+                    'angle_deg': float(line.angle_deg),         # 0=E,90=N
+                    'n': [float(line.n[0]), float(line.n[1])],
+                    't': [float(line.t[0]), float(line.t[1])],
+                    'rho_m': float(line.rho)                   # n^T x = rho
+                },
+                'stopline': {
+                    's_stop_m_from_center': float(s_stop) if not np.isnan(s_stop) else None,
+                    'method': f'quantile_{STOP_QUANTILE}' if not np.isnan(STOP_QUANTILE) else 'median'
+                },
+                'samples': int(len(P)),
+                'inliers': int(v['inliers_mask'].sum())
+            })
+
+        # Determine intersection id from file name
+        inter_id = road_id
+
+        # Write results JSON named by intersection id
+        out_json_path = f"{inter_id}.json"
+        with open(out_json_path, 'w', encoding='utf-8') as f:
+            json.dump(out, f, ensure_ascii=False, indent=2)
+
+        # Optionally write GeoJSON named by intersection id
+        if WRITE_GEOJSON:
+            features = []
+            # Center point
+            features.append({
+                "type": "Feature",
+                "properties": {"type": "center"},
+                "geometry": {"type": "Point", "coordinates": [center_lon, center_lat]}
+            })
+            # Axes and stop lines (draw 120 m length for visualization)
+            L_vis = 120.0
+            for app in out['approaches']:
+                t = np.array(app['axis']['t'])
+                n = np.array(app['axis']['n'])
+                rho = app['axis']['rho_m']
+                # Find a point p0 near the center lying on the axis:
+                # n^T p = rho and along the line direction ± L_vis/2.
+                # First, compute the point p0 on the line closest to the center:
+                # n^T p0 = rho, p0 = center + alpha * n; solve for alpha
+                alpha = rho - n @ center_xy
+                p0 = center_xy + alpha * n
+                p1 = p0 - t * (L_vis/2)
+                p2 = p0 + t * (L_vis/2)
+                lon1, lat1 = xy_to_lonlat(p1[0], p1[1], lon0, lat0)
+                lon2, lat2 = xy_to_lonlat(p2[0], p2[1], lon0, lat0)
+                features.append({
+                    "type": "Feature",
+                    "properties": {"type": "axis", "label": app['label_hint'], "angle_deg": app['axis']['angle_deg']},
+                    "geometry": {"type": "LineString", "coordinates": [[lon1, lat1], [lon2, lat2]]}
+                })
+                # Stop line: perpendicular to the axis, passing through s_stop
+                s_stop = app['stopline']['s_stop_m_from_center']
+                if s_stop is not None:
+                    p_stop_center = center_xy + t * s_stop
+                    # Render stop line with length 20 m
+                    Ls = 20.0
+                    q1 = p_stop_center - n * (Ls/2)
+                    q2 = p_stop_center + n * (Ls/2)
+                    lon1, lat1 = xy_to_lonlat(q1[0], q1[1], lon0, lat0)
+                    lon2, lat2 = xy_to_lonlat(q2[0], q2[1], lon0, lat0)
+                    features.append({
+                        "type": "Feature",
+                        "properties": {"type": "stopline", "label": app['label_hint']},
+                        "geometry": {"type": "LineString", "coordinates": [[lon1, lat1], [lon2, lat2]]}
+                    })
+            out_geojson_path = f"{inter_id}.geojson"
+            with open(out_geojson_path, 'w', encoding='utf-8') as f:
+                json.dump({"type":"FeatureCollection", "features": features}, f, ensure_ascii=False, indent=2)
+
+        # Console summary
+        print(f"\n=== Intersection Inference Results ({inter_id}) ===")
+        print(f"Center (local m): x={center_xy[0]:.2f}, y={center_xy[1]:.2f}")
+        print(f"Center (lon,lat): ({center_lon:.6f}, {center_lat:.6f})")
+        for app in out['approaches']:
+            print(f"\n[{app['label_hint']}]  samples={app['samples']}  inliers={app['inliers']}")
+            print(f"  Axis angle = {app['axis']['angle_deg']:.2f} deg (0=E,90=N)")
+            print(f"  Axis eqn   : n^T x = rho,  n={app['axis']['n']}, rho={app['axis']['rho_m']:.2f} m")
+            sstop = app['stopline']['s_stop_m_from_center']
+            print(f"  Stop-line s(from center) = {None if sstop is None else f'{sstop:.2f} m'}  ({app['stopline']['method']})")
+
+        if WRITE_GEOJSON:
+            print(f"\nWrote {out_json_path} and {out_geojson_path}.")
+        else:
+            print(f"\nWrote {out_json_path}.")
 
 if __name__ == "__main__":
     main()

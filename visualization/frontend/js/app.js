@@ -6,18 +6,21 @@ class GeoVisualization {
         this.dataSource = null;
         this.topologyDataSource = null;
         this.overlayDataSource = null;
+        this.smoothingDataSource = null;
         this.currentVehicleData = [];
         this.currentTrafficLightData = null;
         this.currentSpeedData = null;
         this.currentSpeedTrafficLights = null;
         this.currentTopologyData = null;
-        this.apiBaseUrl = 'http://127.0.0.1:5000/api';
+        this.apiBaseUrl = 'http://127.0.0.1:5555/api';
         this.currentSelectedMetric = 'speed';
         this.currentSelectedSegId = null;
+        this.currentVehicleFilterMode = 'direction';
+        this.currentSmoothingData = null;
         
 		// Analysis centers and radius (A0003 and A0008 should both be displayed)
 		this.analysisCenters = {
-			A0003: { lon: 123.152480, lat: 32.345120 },
+			A0003: { lon: 123.152539, lat: 32.345137 },
 			A0008: { lon: 123.181261, lat: 32.327137 }
 		};
         this.centerChangeRadiusMeters = 50.0;
@@ -62,6 +65,9 @@ class GeoVisualization {
         this.overlayDataSource = new Cesium.CustomDataSource('analysisOverlays');
         this.viewer.dataSources.add(this.overlayDataSource);
 
+        this.smoothingDataSource = new Cesium.CustomDataSource('smoothingComparison');
+        this.viewer.dataSources.add(this.smoothingDataSource);
+
         // Set initial view to China region
         this.viewer.camera.setView({
             destination: Cesium.Cartesian3.fromDegrees(116.4, 39.9, 1000000)
@@ -78,6 +84,9 @@ class GeoVisualization {
 
         // Draw analysis center and radius overlay
         this.drawAnalysisCenterOverlay();
+
+        // Load and render inferred intersection overlays for A0003 and A0008
+        this.loadIntersectionInferenceOverlays();
 
         console.log('Cesium map initialization completed');
     }
@@ -250,6 +259,145 @@ class GeoVisualization {
     }
 
     /**
+     * Load and render intersection inference overlays for configured roads
+     */
+    async loadIntersectionInferenceOverlays() {
+        const roadIds = ['A0003', 'A0008'];
+        try {
+            const tasks = roadIds.map(async (rid) => {
+                const url = `${this.apiBaseUrl}/intersection/inference?road_id=${rid}`;
+                const resp = await fetch(url);
+                const data = await resp.json();
+                if (data.status === 'success' && data.inference) {
+                    this.drawIntersectionInference(rid, data.inference);
+                } else {
+                    console.warn(`Failed to load intersection inference for ${rid}:`, data.message);
+                }
+            });
+            await Promise.all(tasks);
+        } catch (e) {
+            console.error('Error loading intersection inference overlays:', e);
+        }
+    }
+
+    /**
+     * Compute destination lon/lat offset by distance (m) along angle (deg, 0=E,90=N)
+     */
+    offsetLonLat(lon, lat, distanceMeters, angleDeg) {
+        const R = 6378137.0;
+        const rad = Math.PI / 180.0;
+        const deg = 180.0 / Math.PI;
+        const theta = angleDeg * rad; // 0=E, CCW positive
+        const dx = distanceMeters * Math.cos(theta);
+        const dy = distanceMeters * Math.sin(theta);
+        const latRad = lat * rad;
+        const dLon = (dx / (R * Math.cos(latRad))) * deg;
+        const dLat = (dy / R) * deg;
+        return [lon + dLon, lat + dLat];
+    }
+
+    /**
+     * Draw center, axes and stop lines from inference JSON for a given road
+     */
+    drawIntersectionInference(roadId, inference) {
+        if (!inference || !inference.center_point) return;
+        const cp = inference.center_point;
+        const centerLon = Number(cp.lon);
+        const centerLat = Number(cp.lat);
+        const centerX = Number(cp.x_m);
+        const centerY = Number(cp.y_m);
+        const centerXY = [centerX, centerY];
+
+        // Distinct colors per road
+        const colorAxis = (roadId === 'A0008') ? Cesium.Color.MAGENTA : Cesium.Color.CYAN;
+        const colorStop = (roadId === 'A0008') ? Cesium.Color.YELLOW : Cesium.Color.ORANGE;
+        const colorCenter = (roadId === 'A0008') ? Cesium.Color.MAGENTA : Cesium.Color.CYAN;
+
+        // Center point
+        this.topologyDataSource.entities.add({
+            id: `intersection_center_${roadId}`,
+            position: Cesium.Cartesian3.fromDegrees(centerLon, centerLat),
+            point: {
+                pixelSize: 12,
+                color: colorCenter,
+                outlineColor: Cesium.Color.WHITE,
+                outlineWidth: 2
+            },
+            label: {
+                text: `${roadId} Center`,
+                font: '14px sans-serif',
+                fillColor: Cesium.Color.WHITE,
+                outlineColor: Cesium.Color.BLACK,
+                outlineWidth: 2,
+                style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+                pixelOffset: new Cesium.Cartesian2(0, -20)
+            }
+        });
+
+        const L_vis = 120.0; // meters for axis visualization
+        const Ls = 20.0;     // meters for stop line length
+
+        (inference.approaches || []).forEach(app => {
+            try {
+                const axis = app.axis || {};
+                const angleDeg = Number(axis.angle_deg) || 0.0; // 0=E,90=N
+                const rho = Number(axis.rho_m) || 0.0;
+                const n = axis.n || [0, 1];
+                const nDotCenter = n[0] * centerXY[0] + n[1] * centerXY[1];
+                const alpha = rho - nDotCenter; // meters along normal from center to closest axis point
+
+                const nAngle = (angleDeg + 90.0) % 360.0;
+                const tAngle = angleDeg;
+
+                // Base point on axis near center
+                const [axisBaseLon, axisBaseLat] = this.offsetLonLat(centerLon, centerLat, alpha, nAngle);
+                const [lon1, lat1] = this.offsetLonLat(axisBaseLon, axisBaseLat, -L_vis / 2, tAngle);
+                const [lon2, lat2] = this.offsetLonLat(axisBaseLon, axisBaseLat, +L_vis / 2, tAngle);
+
+                // Axis line
+                this.topologyDataSource.entities.add({
+                    id: `axis_${roadId}_${app.cluster_label}`,
+                    polyline: {
+                        positions: [
+                            Cesium.Cartesian3.fromDegrees(lon1, lat1),
+                            Cesium.Cartesian3.fromDegrees(lon2, lat2)
+                        ],
+                        width: 4,
+                        material: colorAxis.withAlpha(0.9),
+                        clampToGround: true
+                    },
+                    description: `<h3>Axis ${app.label_hint || app.cluster_label}</h3><p>Angle: ${angleDeg.toFixed(1)}°</p>`
+                });
+
+                // Stop line if available
+                const sStop = app.stopline && (app.stopline.s_stop_m_from_center !== null && app.stopline.s_stop_m_from_center !== undefined)
+                    ? Number(app.stopline.s_stop_m_from_center) : null;
+                if (sStop !== null && Number.isFinite(sStop)) {
+                    const [sLon, sLat] = this.offsetLonLat(centerLon, centerLat, sStop, tAngle);
+                    const [q1Lon, q1Lat] = this.offsetLonLat(sLon, sLat, -Ls / 2, nAngle);
+                    const [q2Lon, q2Lat] = this.offsetLonLat(sLon, sLat, +Ls / 2, nAngle);
+                    this.topologyDataSource.entities.add({
+                        id: `stopline_${roadId}_${app.cluster_label}`,
+                        polyline: {
+                            positions: [
+                                Cesium.Cartesian3.fromDegrees(q1Lon, q1Lat),
+                                Cesium.Cartesian3.fromDegrees(q2Lon, q2Lat)
+                            ],
+                            width: 5,
+                            material: colorStop.withAlpha(0.9),
+                            clampToGround: true
+                        },
+                        description: `<h3>Stop Line ${app.label_hint || app.cluster_label}</h3><p>s from center: ${sStop.toFixed(2)} m</p>`
+                    });
+                }
+            } catch (e) {
+                console.warn('Failed to render approach overlay:', e);
+            }
+        });
+    }
+
+    /**
      * Bind event listeners
      */
     bindEvents() {
@@ -258,6 +406,9 @@ class GeoVisualization {
         const loadDatesBtn = document.getElementById('loadDatesBtn');
         const vehicleModeSelect = document.getElementById('vehicleMode');
         const roadIdSelect = document.getElementById('roadId');
+        const vehicleFilterModeSelect = document.getElementById('vehicleFilterMode');
+        const loadSmoothingBtn = document.getElementById('loadSmoothingBtn');
+        const clearSmoothingBtn = document.getElementById('clearSmoothingBtn');
         
         // Traffic light query elements
         const loadCyclesBtn = document.getElementById('loadCyclesBtn');
@@ -277,7 +428,7 @@ class GeoVisualization {
         const speedMetricSelect = document.getElementById('speedMetric');
         const speedSegIdInput = document.getElementById('speedSegId');
         
-        // Topology elements
+        // Topology elements (panel removed) - guard for null
         const loadTopologyBtn = document.getElementById('loadTopologyBtn');
         const clearTopologyBtn = document.getElementById('clearTopologyBtn');
         const topologyRoadIdSelect = document.getElementById('topologyRoadId');
@@ -312,6 +463,26 @@ class GeoVisualization {
         roadIdSelect.addEventListener('change', () => {
             this.loadAvailableDates();
         });
+
+        if (vehicleFilterModeSelect) {
+            this.currentVehicleFilterMode = vehicleFilterModeSelect.value || 'direction';
+            vehicleFilterModeSelect.addEventListener('change', (e) => {
+                this.currentVehicleFilterMode = e.target.value || 'direction';
+                this.updateVehicleFilterVisibility();
+            });
+        }
+
+        if (loadSmoothingBtn) {
+            loadSmoothingBtn.addEventListener('click', () => {
+                this.loadSmoothingComparison();
+            });
+        }
+
+        if (clearSmoothingBtn) {
+            clearSmoothingBtn.addEventListener('click', () => {
+                this.clearSmoothingComparison();
+            });
+        }
 
         // Traffic light query event listeners
         loadCyclesBtn.addEventListener('click', () => {
@@ -360,14 +531,17 @@ class GeoVisualization {
             });
         }
 
-        // Topology event listeners
-        loadTopologyBtn.addEventListener('click', () => {
-            this.loadIntersectionTopology();
-        });
-
-        clearTopologyBtn.addEventListener('click', () => {
-            this.clearTopology();
-        });
+        // Topology event listeners (panel removed)
+        if (loadTopologyBtn) {
+            loadTopologyBtn.addEventListener('click', () => {
+                this.loadIntersectionTopology();
+            });
+        }
+        if (clearTopologyBtn) {
+            clearTopologyBtn.addEventListener('click', () => {
+                this.clearTopology();
+            });
+        }
 
         // Timeline modal event listeners
         if (closeTimelineModal) {
@@ -426,6 +600,7 @@ class GeoVisualization {
             });
         });
 
+        this.updateVehicleFilterVisibility();
     }
 
     /**
@@ -467,6 +642,26 @@ class GeoVisualization {
             batchSection.style.display = 'none';
             timeRangeSection.style.display = 'block';
         }
+
+        this.updateVehicleFilterVisibility();
+    }
+
+    updateVehicleFilterVisibility() {
+        const mode = this.currentVehicleFilterMode || 'direction';
+        const directionContainers = document.querySelectorAll('.direction-filter-container');
+        const movementContainers = document.querySelectorAll('.movement-filter-container');
+
+        directionContainers.forEach((el) => {
+            if (el) {
+                el.style.display = mode === 'direction' ? 'block' : 'none';
+            }
+        });
+
+        movementContainers.forEach((el) => {
+            if (el) {
+                el.style.display = mode === 'movement' ? 'block' : 'none';
+            }
+        });
     }
 
     /**
@@ -616,6 +811,7 @@ class GeoVisualization {
             const roadId = document.getElementById('roadId').value;
             const dataLimit = document.getElementById('dataLimit').value;
             const dateFilter = document.getElementById('dateFilter').value;
+            const filterMode = this.currentVehicleFilterMode || 'direction';
 
             let apiUrl;
             let summaryUrl;
@@ -628,14 +824,21 @@ class GeoVisualization {
             } else if (vehicleMode === 'batch') {
                 // Batch vehicle mode
                 const vehicleCount = document.getElementById('vehicleCount').value;
-                const direction = document.getElementById('batchDirection').value;
                 apiUrl = `${this.apiBaseUrl}/vehicle/data?vehicle_count=${vehicleCount}&road_id=${roadId}`;
                 summaryUrl = `${this.apiBaseUrl}/vehicle/summary?vehicle_count=${vehicleCount}&road_id=${roadId}`;
                 
-                // Add direction filter if specified
-                if (direction) {
-                    apiUrl += `&direction=${direction}`;
-                    summaryUrl += `&direction=${direction}`;
+                if (filterMode === 'direction') {
+                    const direction = document.getElementById('batchDirection').value;
+                    if (direction) {
+                        apiUrl += `&direction=${direction}`;
+                        summaryUrl += `&direction=${direction}`;
+                    }
+                } else if (filterMode === 'movement') {
+                    const movement = document.getElementById('batchMovement').value;
+                    if (movement) {
+                        apiUrl += `&movement=${movement}`;
+                        summaryUrl += `&movement=${movement}`;
+                    }
                 }
             } else if (vehicleMode === 'time_range') {
                 // Time range mode
@@ -660,11 +863,18 @@ class GeoVisualization {
                 apiUrl = `${this.apiBaseUrl}/vehicle/data?start_time=${startTime}&end_time=${endTime}&road_id=${roadId}`;
                 summaryUrl = `${this.apiBaseUrl}/vehicle/summary?start_time=${startTime}&end_time=${endTime}&road_id=${roadId}`;
                 
-                // Add direction filter if specified
-                const direction = document.getElementById('timeRangeDirection').value;
-                if (direction) {
-                    apiUrl += `&direction=${direction}`;
-                    summaryUrl += `&direction=${direction}`;
+                if (filterMode === 'direction') {
+                    const direction = document.getElementById('timeRangeDirection').value;
+                    if (direction) {
+                        apiUrl += `&direction=${direction}`;
+                        summaryUrl += `&direction=${direction}`;
+                    }
+                } else if (filterMode === 'movement') {
+                    const movement = document.getElementById('timeRangeMovement').value;
+                    if (movement) {
+                        apiUrl += `&movement=${movement}`;
+                        summaryUrl += `&movement=${movement}`;
+                    }
                 }
             }
 
@@ -1826,6 +2036,212 @@ class GeoVisualization {
         ctx.strokeStyle = '#cccccc';
         ctx.lineWidth = 1;
         ctx.strokeRect(padding, padding, chartWidth, chartHeight);
+    }
+
+    /**
+     * Handle smoothing comparison status display
+     */
+    showSmoothingStatus(message, type = 'info') {
+        const statusDiv = document.getElementById('smoothingStatus');
+        const statusText = document.getElementById('smoothingStatusText');
+
+        if (!statusDiv || !statusText) return;
+
+        statusText.textContent = message;
+        statusDiv.className = `status ${type}`;
+        statusDiv.style.display = 'block';
+
+        if (type === 'error' || type === 'warning') {
+            statusDiv.dataset.locked = 'true';
+        } else {
+            statusDiv.dataset.locked = 'false';
+        }
+
+        if (type === 'success' || type === 'info') {
+            setTimeout(() => {
+                if (!statusDiv.dataset.locked || statusDiv.dataset.locked !== 'true') {
+                    statusDiv.style.display = 'none';
+                }
+            }, 3000);
+        }
+    }
+
+    /**
+     * Load raw vs smoothed trajectories for comparison
+     */
+    async loadSmoothingComparison() {
+        try {
+            const roadId = document.getElementById('smoothingRoadId').value;
+            const date = document.getElementById('smoothingDate').value;
+            const vehicleId = document.getElementById('smoothingVehicleId').value;
+            const segIdInput = document.getElementById('smoothingSegId').value;
+
+            if (!vehicleId) {
+                this.showSmoothingStatus('Please enter a vehicle ID', 'warning');
+                return;
+            }
+
+            if (!date) {
+                this.showSmoothingStatus('Please select a date', 'warning');
+                return;
+            }
+
+            const params = new URLSearchParams({
+                road_id: roadId,
+                vehicle_id: vehicleId,
+                date
+            });
+
+            if (segIdInput) {
+                params.append('seg_id', segIdInput);
+            }
+
+            const url = `${this.apiBaseUrl}/trajectory/smoothing?${params.toString()}`;
+            this.showSmoothingStatus('Loading trajectories...', 'info');
+
+            const resp = await fetch(url);
+            const data = await resp.json();
+
+            if (data.status !== 'success') {
+                const message = data.message || 'Failed to load smoothing data';
+                this.showSmoothingStatus(message, 'error');
+                return;
+            }
+
+            this.renderSmoothingComparison(data);
+            this.currentSmoothingData = data;
+            this.showSmoothingStatus('Loaded trajectories for comparison', 'success');
+
+        } catch (error) {
+            console.error('Error loading smoothing comparison:', error);
+            this.showSmoothingStatus(`Error: ${error.message}`, 'error');
+        }
+    }
+
+    /**
+     * Render comparison trajectories on map
+     */
+    renderSmoothingComparison(data) {
+        if (!this.smoothingDataSource || !this.viewer) return;
+
+        this.smoothingDataSource.entities.removeAll();
+
+        const rawPoints = data.raw_points || [];
+        const smoothPoints = data.smoothed_points || [];
+
+        const rawPositions = rawPoints
+            .filter(p => Number.isFinite(p.longitude) && Number.isFinite(p.latitude))
+            .map(p => Cesium.Cartesian3.fromDegrees(p.longitude, p.latitude));
+
+        const smoothPositions = smoothPoints
+            .filter(p => Number.isFinite(p.longitude) && Number.isFinite(p.latitude))
+            .map(p => Cesium.Cartesian3.fromDegrees(p.longitude, p.latitude));
+
+        if (rawPositions.length > 1) {
+            this.smoothingDataSource.entities.add({
+                id: 'raw_trajectory',
+                polyline: {
+                    positions: rawPositions,
+                    width: 4,
+                    material: Cesium.Color.RED.withAlpha(0.8),
+                    clampToGround: true
+                },
+                description: 'Raw trajectory from split data'
+            });
+        }
+
+        if (smoothPositions.length > 1) {
+            this.smoothingDataSource.entities.add({
+                id: 'smooth_trajectory',
+                polyline: {
+                    positions: smoothPositions,
+                    width: 4,
+                    material: Cesium.Color.CYAN.withAlpha(0.8),
+                    clampToGround: true
+                },
+                description: 'Smoothed trajectory derived from smoother CSV'
+            });
+        }
+
+        if (rawPositions.length) {
+            this.smoothingDataSource.entities.add({
+                id: 'raw_start_point',
+                position: rawPositions[0],
+                point: {
+                    pixelSize: 10,
+                    color: Cesium.Color.RED,
+                    outlineColor: Cesium.Color.WHITE,
+                    outlineWidth: 2
+                },
+                label: {
+                    text: 'Raw Start',
+                    font: '12px sans-serif',
+                    fillColor: Cesium.Color.WHITE,
+                    outlineColor: Cesium.Color.BLACK,
+                    outlineWidth: 2,
+                    style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                    verticalOrigin: Cesium.VerticalOrigin.TOP,
+                    pixelOffset: new Cesium.Cartesian2(0, -16)
+                }
+            });
+        }
+
+        if (smoothPositions.length) {
+            this.smoothingDataSource.entities.add({
+                id: 'smooth_start_point',
+                position: smoothPositions[0],
+                point: {
+                    pixelSize: 10,
+                    color: Cesium.Color.CYAN,
+                    outlineColor: Cesium.Color.WHITE,
+                    outlineWidth: 2
+                },
+                label: {
+                    text: 'Smoothed Start',
+                    font: '12px sans-serif',
+                    fillColor: Cesium.Color.WHITE,
+                    outlineColor: Cesium.Color.BLACK,
+                    outlineWidth: 2,
+                    style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                    verticalOrigin: Cesium.VerticalOrigin.TOP,
+                    pixelOffset: new Cesium.Cartesian2(0, -16)
+                }
+            });
+        }
+
+        if (rawPositions.length || smoothPositions.length) {
+            this.viewer.flyTo(this.smoothingDataSource);
+        }
+
+        const rawCountEl = document.getElementById('smoothingRawCount');
+        const smoothCountEl = document.getElementById('smoothingSmoothedCount');
+        if (rawCountEl) {
+            rawCountEl.textContent = `Raw Points: ${rawPoints.length}`;
+        }
+        if (smoothCountEl) {
+            smoothCountEl.textContent = `Smoothed Points: ${smoothPoints.length}`;
+        }
+    }
+
+    /**
+     * Clear smoothing comparison visualization
+     */
+    clearSmoothingComparison() {
+        if (this.smoothingDataSource) {
+            this.smoothingDataSource.entities.removeAll();
+        }
+        this.currentSmoothingData = null;
+
+        const rawCountEl = document.getElementById('smoothingRawCount');
+        const smoothCountEl = document.getElementById('smoothingSmoothedCount');
+        if (rawCountEl) rawCountEl.textContent = 'Raw Points: --';
+        if (smoothCountEl) smoothCountEl.textContent = 'Smoothed Points: --';
+
+        const statusDiv = document.getElementById('smoothingStatus');
+        if (statusDiv) {
+            statusDiv.style.display = 'none';
+            statusDiv.dataset.locked = 'false';
+        }
     }
 
     /**

@@ -31,7 +31,28 @@ def load_direction_data():
             direction_data = pd.DataFrame()
     return direction_data
 
-def load_vehicle_data(vehicle_id=None, road_id='A0003', vehicle_count=None, date=None, start_time=None, end_time=None, direction=None):
+def load_movement_data():
+    """Load movement classification results from movement.csv."""
+    movement_path = os.path.join(CSV_BASE_PATH, 'movement.csv')
+    if not os.path.exists(movement_path):
+        print(f"Movement file not found: {movement_path}")
+        return pd.DataFrame()
+
+    try:
+        df = pd.read_csv(movement_path)
+        return df
+    except Exception as exc:
+        print(f"Error loading movement data: {exc}")
+        return pd.DataFrame()
+
+def load_vehicle_data(vehicle_id=None,
+                      road_id='A0003',
+                      vehicle_count=None,
+                      date=None,
+                      start_time=None,
+                      end_time=None,
+                      direction=None,
+                      movement=None):
     """
     Load data for specified vehicle ID(s) and road ID using pandas
     
@@ -43,6 +64,7 @@ def load_vehicle_data(vehicle_id=None, road_id='A0003', vehicle_count=None, date
         start_time: Start time filter in HH:MM format (optional)
         end_time: End time filter in HH:MM format (optional)
         direction: Direction filter (A1, A2, A3, A4, C) (optional)
+        movement: Movement category filter (straight, turn, uturn) (optional)
     """
     try:
         # Build CSV file path based on road_id (split only)
@@ -113,6 +135,64 @@ def load_vehicle_data(vehicle_id=None, road_id='A0003', vehicle_count=None, date
                 else:
                     # No vehicles match the direction filter
                     vehicle_data = vehicle_data.iloc[0:0]  # Empty dataframe with same structure
+        if movement:
+            movement_key = str(movement).strip().lower()
+            movement_df = load_movement_data()
+            if not movement_df.empty:
+                movement_df = movement_df[movement_df['road_id'] == road_id]
+                if date:
+                    movement_df = movement_df[movement_df['date'] == date]
+
+                if movement_key == 'turn':
+                    allowed = {'left', 'left-like', 'right', 'right-like'}
+                elif movement_key == 'straight':
+                    allowed = {'straight'}
+                elif movement_key == 'uturn' or movement_key == 'u-turn':
+                    allowed = {'uturn', 'u-turn'}
+                else:
+                    allowed = set()
+
+                if allowed:
+                    movement_df = movement_df[movement_df['movement'].astype(str).str.lower().isin(allowed)]
+
+                if allowed and not movement_df.empty:
+                    valid_triplets = set(
+                        (
+                            int(v),
+                            str(d),
+                            int(s) if pd.notna(s) else 0
+                        )
+                        for v, d, s in zip(
+                            movement_df['vehicle_id'],
+                            movement_df['date'],
+                            movement_df['seg_id'] if 'seg_id' in movement_df.columns else [0] * len(movement_df)
+                        )
+                    )
+
+                    def movement_match(row):
+                        seg_val = 0
+                        if 'seg_id' in row.index and pd.notna(row['seg_id']):
+                            try:
+                                seg_val = int(row['seg_id'])
+                            except Exception:
+                                try:
+                                    seg_val = int(float(row['seg_id']))
+                                except Exception:
+                                    seg_val = 0
+                        try:
+                            veh_id = int(row['vehicle_id'])
+                        except Exception:
+                            try:
+                                veh_id = int(float(row['vehicle_id']))
+                            except Exception:
+                                veh_id = 0
+                        return (veh_id, str(row['date']), seg_val) in valid_triplets
+
+                    vehicle_data = vehicle_data[
+                        vehicle_data.apply(movement_match, axis=1)
+                    ]
+                elif allowed:
+                    vehicle_data = vehicle_data.iloc[0:0]
         
         # Convert to list of dictionaries format
         data_list = []
@@ -225,10 +305,14 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 self._handle_speed_time_range(params)
             elif path == '/api/topology/intersection':
                 self._handle_intersection_topology(params)
+            elif path == '/api/intersection/inference':
+                self._handle_intersection_inference(params)
             elif path == '/api/direction/segments':
                 self._handle_direction_segments(params)
             elif path == '/api/trajectory/segment':
                 self._handle_trajectory_segment(params)
+            elif path == '/api/trajectory/smoothing':
+                self._handle_trajectory_smoothing(params)
             else:
                 self._send_json_response({
                     'status': 'error',
@@ -280,6 +364,8 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             
             # Get direction filter from query parameters
             direction = params.get('direction')
+            movement = params.get('movement')
+            movement = params.get('movement')
             
             # Get data point limit, default to return all data
             limit = params.get('limit')
@@ -293,19 +379,38 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             
             if start_time and end_time:
                 # Time range mode: load all vehicles in time range
-                data = load_vehicle_data(road_id=road_id, date=date, start_time=start_time, end_time=end_time, direction=direction)
+                data = load_vehicle_data(
+                    road_id=road_id,
+                    date=date,
+                    start_time=start_time,
+                    end_time=end_time,
+                    direction=direction,
+                    movement=movement
+                )
                 vehicle_id = None  # Not applicable in time range mode
                 vehicle_count = None  # Will be calculated from data
             elif vehicle_count_param:
                 # Batch mode: load multiple vehicles
                 vehicle_count = int(vehicle_count_param)
-                data = load_vehicle_data(road_id=road_id, vehicle_count=vehicle_count, date=date, direction=direction)
+                data = load_vehicle_data(
+                    road_id=road_id,
+                    vehicle_count=vehicle_count,
+                    date=date,
+                    direction=direction,
+                    movement=movement
+                )
                 vehicle_id = None  # Not applicable in batch mode
             else:
                 # Single mode: load specific vehicle
                 vehicle_id = int(params.get('vehicle_id', 1))
                 vehicle_count = None  # Not applicable in single mode
-                data = load_vehicle_data(vehicle_id=vehicle_id, road_id=road_id, date=date, direction=direction)
+                data = load_vehicle_data(
+                    vehicle_id=vehicle_id,
+                    road_id=road_id,
+                    date=date,
+                    direction=direction,
+                    movement=movement
+                )
             
             if limit and limit > 0:
                 data = data[:limit]
@@ -371,19 +476,38 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             
             if start_time and end_time:
                 # Time range mode: load all vehicles in time range
-                data = load_vehicle_data(road_id=road_id, date=date, start_time=start_time, end_time=end_time, direction=direction)
+                data = load_vehicle_data(
+                    road_id=road_id,
+                    date=date,
+                    start_time=start_time,
+                    end_time=end_time,
+                    direction=direction,
+                    movement=movement
+                )
                 vehicle_id = None  # Not applicable in time range mode
                 vehicle_count = None  # Will be calculated from data
             elif vehicle_count_param:
                 # Batch mode: load multiple vehicles
                 vehicle_count = int(vehicle_count_param)
-                data = load_vehicle_data(road_id=road_id, vehicle_count=vehicle_count, date=date, direction=direction)
+                data = load_vehicle_data(
+                    road_id=road_id,
+                    vehicle_count=vehicle_count,
+                    date=date,
+                    direction=direction,
+                    movement=movement
+                )
                 vehicle_id = None  # Not applicable in batch mode
             else:
                 # Single mode: load specific vehicle
                 vehicle_id = int(params.get('vehicle_id', 1))
                 vehicle_count = None  # Not applicable in single mode
-                data = load_vehicle_data(vehicle_id=vehicle_id, road_id=road_id, date=date, direction=direction)
+                data = load_vehicle_data(
+                    vehicle_id=vehicle_id,
+                    road_id=road_id,
+                    date=date,
+                    direction=direction,
+                    movement=movement
+                )
             
             if not data:
                 self._send_json_response({
@@ -1072,6 +1196,42 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 'message': f'Error loading topology: {str(e)}'
             }, 500)
 
+    def _handle_intersection_inference(self, params):
+        """Serve intersection inference JSON (center, axes, stoplines) per road_id.
+        Expects files like A0003.json, A0008.json under CSV_BASE_PATH.
+        """
+        try:
+            road_id = params.get('road_id', 'A0003')
+            json_path = os.path.join(CSV_BASE_PATH, f'{road_id}.json')
+
+            if not os.path.exists(json_path):
+                self._send_json_response({
+                    'status': 'error',
+                    'message': f'Inference file not found for road {road_id}: {json_path}',
+                    'hint': 'Run infer_intersection.py to generate the JSON files (e.g., A0003.json)'
+                }, 404)
+                return
+
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            self._send_json_response({
+                'status': 'success',
+                'road_id': road_id,
+                'inference': data,
+                'file_path': json_path
+            })
+        except json.JSONDecodeError as e:
+            self._send_json_response({
+                'status': 'error',
+                'message': f'Invalid JSON in inference file: {str(e)}'
+            }, 500)
+        except Exception as e:
+            self._send_json_response({
+                'status': 'error',
+                'message': f'Error loading inference: {str(e)}'
+            }, 500)
+
     def _handle_direction_segments(self, params):
         """List segments filtered by road_id and direction (and optional vehicle_id/date/seg_id)."""
         try:
@@ -1173,12 +1333,125 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             self._send_json_response({'status': 'success', 'road_id': road_id, 'vehicle_id': vehicle_id_i, 'date': date, 'seg_id': seg_id_i, 'total_points': len(rows), 'data': rows})
         except Exception as e:
             self._send_json_response({'status': 'error', 'message': str(e)}, 500)
+
+    def _handle_trajectory_smoothing(self, params):
+        """Return raw vs smoothed trajectories for comparison."""
+        try:
+            road_id = params.get('road_id', 'A0003')
+            vehicle_id = params.get('vehicle_id')
+            date = params.get('date')
+            seg_id = params.get('seg_id')
+
+            if vehicle_id is None or date is None:
+                self._send_json_response({
+                    'status': 'error',
+                    'message': 'vehicle_id and date are required'
+                }, 400)
+                return
+
+            try:
+                vehicle_id_i = int(vehicle_id)
+            except ValueError:
+                self._send_json_response({
+                    'status': 'error',
+                    'message': 'vehicle_id must be an integer'
+                }, 400)
+                return
+
+            seg_id_i = None
+            if seg_id is not None and seg_id != '':
+                try:
+                    seg_id_i = int(seg_id)
+                except ValueError:
+                    self._send_json_response({
+                        'status': 'error',
+                        'message': 'seg_id must be an integer when provided'
+                    }, 400)
+                    return
+
+            raw_path = os.path.join(CSV_BASE_PATH, f'{road_id}_split.csv')
+            smooth_path = os.path.join(CSV_BASE_PATH, f'{road_id}_smoother.csv')
+
+            if not os.path.exists(raw_path):
+                self._send_json_response({
+                    'status': 'error',
+                    'message': f'Raw CSV not found for {road_id}'
+                }, 404)
+                return
+
+            if not os.path.exists(smooth_path):
+                self._send_json_response({
+                    'status': 'error',
+                    'message': f'Smoother CSV not found for {road_id}'
+                }, 404)
+                return
+
+            df_raw = pd.read_csv(raw_path)
+            df_raw = df_raw[(df_raw['vehicle_id'] == vehicle_id_i) & (df_raw['date'].astype(str) == str(date))]
+            if seg_id_i is not None and 'seg_id' in df_raw.columns:
+                df_raw = df_raw[df_raw['seg_id'] == seg_id_i]
+
+            if df_raw.empty:
+                self._send_json_response({
+                    'status': 'error',
+                    'message': 'No raw data found with specified filters'
+                }, 404)
+                return
+
+            df_raw = df_raw.sort_values('collectiontime') if 'collectiontime' in df_raw.columns else df_raw.sort_values('time_stamp')
+
+            df_smooth = pd.read_csv(smooth_path)
+            df_smooth = df_smooth[(df_smooth['vehicle_id'] == vehicle_id_i) & (df_smooth['date'].astype(str) == str(date))]
+            if seg_id_i is not None and 'seg_id' in df_smooth.columns:
+                df_smooth = df_smooth[df_smooth['seg_id'] == seg_id_i]
+
+            if df_smooth.empty:
+                self._send_json_response({
+                    'status': 'error',
+                    'message': 'No smoothed data found with specified filters'
+                }, 404)
+                return
+
+            df_smooth = df_smooth.sort_values('collectiontime') if 'collectiontime' in df_smooth.columns else df_smooth.sort_values('time_stamp')
+
+            def df_to_points(df):
+                points = []
+                for _, row in df.iterrows():
+                    point = {
+                        'longitude': float(row['longitude']) if pd.notna(row['longitude']) else None,
+                        'latitude': float(row['latitude']) if pd.notna(row['latitude']) else None,
+                        'collectiontime': int(row['collectiontime']) if 'collectiontime' in row and pd.notna(row['collectiontime']) else None,
+                        'time_stamp': str(row['time_stamp']) if 'time_stamp' in row and pd.notna(row['time_stamp']) else None,
+                        'seg_id': int(row['seg_id']) if 'seg_id' in row and pd.notna(row['seg_id']) else None,
+                    }
+                    points.append(point)
+                return points
+
+            raw_points = df_to_points(df_raw)
+            smooth_points = df_to_points(df_smooth)
+
+            response = {
+                'status': 'success',
+                'road_id': road_id,
+                'vehicle_id': vehicle_id_i,
+                'date': str(date),
+                'seg_id': seg_id_i,
+                'raw_count': len(raw_points),
+                'smoothed_count': len(smooth_points),
+                'raw_points': raw_points,
+                'smoothed_points': smooth_points
+            }
+
+            self._send_json_response(response)
+
+        except Exception as e:
+            self._send_json_response({'status': 'error', 'message': str(e)}, 500)
     
     def log_message(self, format, *args):
         """Override log message to show custom format"""
         print(f"[{self.address_string()}] {format % args}")
 
-def run_server(host='127.0.0.1', port=5000):
+def run_server(host='127.0.0.1', port=5555):
     """Run the HTTP server"""
     print("Starting Geographic Data Visualization Backend Service...")
     print(f"CSV base path: {os.path.abspath(CSV_BASE_PATH)}")

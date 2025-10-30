@@ -10,7 +10,7 @@ B2: Left turn toward East/West (N->E or S->W)
 C: Other directions (including right turns, U-turns, etc.)
 
 Intersection centers (per road):
-- A0003: lon=123.152480, lat=32.345120
+- A0003: lon=123.152539, lat=32.345137
 - A0008: lon=123.181261, lat=32.327137
 """
 
@@ -19,8 +19,8 @@ import numpy as np
 import math
 
 # Default intersection center (fallback; functions now take explicit center parameters)
-INTERSECTION_CENTER_LON = 123.152480
-INTERSECTION_CENTER_LAT = 32.345120
+INTERSECTION_CENTER_LON = 123.152539
+INTERSECTION_CENTER_LAT = 32.345137
 
 # Radius for using near-center steps to classify turns (A2/B2) and as near-center anchor threshold
 TURN_CLASSIFY_RADIUS_M = 200.0
@@ -39,7 +39,10 @@ TWO_POINT_MAX_RADIUS_M = 150.0             # both points should be reasonably ne
 # MANUAL_DIRECTION_OVERRIDES = {
 #     ('A0003', 543, '2024-06-20', 0): 'B1',
 # }
-MANUAL_DIRECTION_OVERRIDES: dict[tuple[str, int, str, int], str] = {}
+MANUAL_DIRECTION_OVERRIDES: dict[tuple[str, int, str, int], str] = {
+    ('A0003', 300, '2024-06-20', 0): 'A2',
+    ('A0008', 1665, '2024-06-17', 0): 'B2',
+}
 
 
 def calculate_bearing(lat1, lon1, lat2, lon2):
@@ -216,18 +219,37 @@ def _axis_from_label(lab: str | None) -> str | None:
 
 def _is_left_turn(from_dir: str, to_dir: str) -> bool:
     """
-    Check if turning from from_dir to to_dir is a left turn (counterclockwise).
-    Left turns (A2 for NS-axis destination, B2 for EW-axis destination):
-    - E→S, W→N (A2: turn to NS axis)
-    - N→E, S→W (B2: turn to EW axis)
+    Check if turning from from_dir to to_dir is a left turn (counterclockwise)
+    under a North-up map with angles increasing counterclockwise from East.
+    Left turns:
+    - N→W, E→N, S→E, W→S
     """
-    left_turns = {('E', 'S'), ('W', 'N'), ('N', 'E'), ('S', 'W')}
+    left_turns = {('N', 'W'), ('E', 'N'), ('S', 'E'), ('W', 'S')}
     return (from_dir, to_dir) in left_turns
+
+def _is_right_turn(from_dir: str, to_dir: str) -> bool:
+    """
+    Check if turning from from_dir to to_dir is a right turn (clockwise).
+    Right turns:
+    - N→E, E→S, S→W, W→N
+    """
+    right_turns = {('N', 'E'), ('E', 'S'), ('S', 'W'), ('W', 'N')}
+    return (from_dir, to_dir) in right_turns
+
+def _normalize_label(label: str | None) -> str | None:
+    """
+    Normalize classification label for external use.
+    - Map right turns 'R' to 'C' per current business rule.
+    - Pass through A1/A2/B1/B2 and None unchanged.
+    """
+    if label == 'R':
+        return 'C'
+    return label
 
 def _classify_turn(prev_lab: str | None, next_lab: str | None) -> str | None:
     """
     Classify turn based on entrance and exit directions.
-    Returns A1 (NS straight), A2 (left to NS), B1 (EW straight), B2 (left to EW), or None.
+    Returns A1 (NS straight), A2 (left to NS), B1 (EW straight), B2 (left to EW), R (right turn), or None.
     """
     if not prev_lab or not next_lab:
         return None
@@ -251,6 +273,10 @@ def _classify_turn(prev_lab: str | None, next_lab: str | None) -> str | None:
     if _is_left_turn(prev_lab, next_lab):
         # Determine category by destination axis
         return 'A2' if next_ax == 'NS' else 'B2'
+    
+    # Right turn
+    if _is_right_turn(prev_lab, next_lab):
+        return 'R'
     
     # Right turn or U-turn → C
     return None
@@ -297,15 +323,26 @@ def classify_near_center_multistep(trajectory_df, center_lat: float, center_lon:
             best_d_point = d
             best_p = i
 
-    def find_prev_label_from(idx: int) -> str | None:
+    def find_prev_label_from(idx: int, min_step_m: float = 8.0) -> str | None:
         for p in range(idx - 1, -1, -1):
+            # compute with tightened min length to avoid micro-jitter
+            avg = (lats[p] + lats[p + 1]) / 2.0
+            dy = (lats[p + 1] - lats[p]) * 111000.0
+            dx = (lons[p + 1] - lons[p]) * 111000.0 * math.cos(math.radians(avg))
+            if math.hypot(dx, dy) < min_step_m:
+                continue
             lab = _step_axis_label(lats, lons, p, p + 1, axis_ratio)
             if lab:
                 return lab
         return None
 
-    def find_next_label_from(idx: int) -> str | None:
+    def find_next_label_from(idx: int, min_step_m: float = 8.0) -> str | None:
         for q in range(idx, n - 1):
+            avg = (lats[q] + lats[q + 1]) / 2.0
+            dy = (lats[q + 1] - lats[q]) * 111000.0
+            dx = (lons[q + 1] - lons[q]) * 111000.0 * math.cos(math.radians(avg))
+            if math.hypot(dx, dy) < min_step_m:
+                continue
             lab = _step_axis_label(lats, lons, q, q + 1, axis_ratio)
             if lab:
                 return lab
@@ -313,11 +350,45 @@ def classify_near_center_multistep(trajectory_df, center_lat: float, center_lon:
 
     # Case 1: step is valid and nearest within near radius
     if best_k is not None and best_proj_in and best_d_step <= near_radius_m:
+        # Prefer polar-angle classification if the center-crossing step is the
+        # very first or very last step of the trajectory (insufficient neighbors).
+        # For first step, use first up-to-3 points; for last step, use last up-to-3 points.
+        if best_k == 0 or best_k == n - 2:
+            if best_k == 0:
+                s_idx = 0
+                e_idx = min(n - 1, 2)
+            else:
+                s_idx = max(0, n - 3)
+                e_idx = n - 1
+            if e_idx > s_idx:
+                two_df = df.iloc[[s_idx, e_idx]]
+                cand = classify_two_point_by_polar_angle(two_df, center_lat, center_lon)
+                norm = _normalize_label(cand)
+                if norm is not None:
+                    return norm
+        center_lab = _step_axis_label(lats, lons, best_k, best_k + 1, axis_ratio)
         prev_lab = find_prev_label_from(best_k)
         next_lab = find_next_label_from(best_k + 1)
+        
+        # Prefer full two-sided entrance/exit classification
         result = _classify_turn(prev_lab, next_lab)
         if result:
-            return result
+            return _normalize_label(result)
+        # Try using the center step when one side is missing
+        result = _classify_turn(prev_lab, center_lab)
+        if result:
+            return _normalize_label(result)
+        result = _classify_turn(center_lab, next_lab)
+        if result:
+            return _normalize_label(result)
+        
+        # Fallback: if only one effective step exists, classify straight by its axis
+        for lab in (center_lab, prev_lab, next_lab):
+            ax = _axis_from_label(lab)
+            if ax == 'NS':
+                return 'A1'
+            if ax == 'EW':
+                return 'B1'
 
     # Case 2: nearest is a point (or step projection not inside)
     if best_p is not None and best_d_point <= near_radius_m:
@@ -340,9 +411,30 @@ def classify_near_center_multistep(trajectory_df, center_lat: float, center_lon:
         if next_lab is None:
             next_lab = find_next_label_from(k + 1)
 
+        # Determine a central step label around k for 2-step variants
+        center_lab_1 = _step_axis_label(lats, lons, k - 1, k, axis_ratio) if k - 1 >= 0 else None
+        center_lab_2 = _step_axis_label(lats, lons, k, k + 1, axis_ratio) if k + 1 < n else None
+        center_lab = center_lab_2 or center_lab_1
+
+        # Prefer entrance/exit pair
         result = _classify_turn(prev_lab, next_lab)
         if result:
-            return result
+            return _normalize_label(result)
+        # Try pairs using the center step
+        result = _classify_turn(prev_lab, center_lab)
+        if result:
+            return _normalize_label(result)
+        result = _classify_turn(center_lab, next_lab)
+        if result:
+            return _normalize_label(result)
+
+        # Fallback: single-step straight by axis
+        for lab in (center_lab, prev_lab, next_lab):
+            ax = _axis_from_label(lab)
+            if ax == 'NS':
+                return 'A1'
+            if ax == 'EW':
+                return 'B1'
 
     return None
 
@@ -423,7 +515,7 @@ def main():
     
     # Intersection centers per road
     centers: dict[str, tuple[float, float]] = {
-        'A0003': (32.345120, 123.152480),  # (lat, lon)
+        'A0003': (32.345137, 123.152539),  # (lat, lon)
         'A0008': (32.327137, 123.181261),  # (lat, lon)
     }
 

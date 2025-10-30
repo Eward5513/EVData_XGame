@@ -63,7 +63,7 @@
                 <label for="vehicleCount">First N Vehicles:</label>
                 <input type="number" id="vehicleCount" value="3" min="1" max="50" style="width: 80px;">
                 
-                <div style="margin-top: 10px;">
+                <div id="batchDirectionSection" class="filter-option direction-filter-container" style="margin-top: 10px;">
                     <label for="batchDirection">Direction Filter:</label>
                     <select id="batchDirection" style="width: 120px;">
                         <option value="" selected>All Directions</option>
@@ -72,6 +72,16 @@
                         <option value="B1">B1 (E-W Straight)</option>
                         <option value="B2">B2 (E-W Left Turn)</option>
                         <option value="C">C (Right Turns & Other)</option>
+                    </select>
+                </div>
+
+                <div id="batchMovementSection" class="filter-option movement-filter-container" style="margin-top: 10px; display: none;">
+                    <label for="batchMovement">Movement Filter:</label>
+                    <select id="batchMovement" style="width: 140px;">
+                        <option value="" selected>All Movements</option>
+                        <option value="straight">Straight</option>
+                        <option value="turn">Turn</option>
+                        <option value="uturn">U-turn</option>
                     </select>
                 </div>
             </div>
@@ -83,7 +93,7 @@
                 <input type="time" id="vehicleEndTime" style="width: 100px;">
                 <button id="loadVehicleTimeRangeBtn" class="btn btn-small">Load Time Range</button>
                 
-                <div style="margin-top: 10px;">
+                <div id="timeRangeDirectionSection" class="filter-option direction-filter-container" style="margin-top: 10px;">
                     <label for="timeRangeDirection">Direction Filter:</label>
                     <select id="timeRangeDirection" style="width: 120px;">
                         <option value="" selected>All Directions</option>
@@ -92,6 +102,16 @@
                         <option value="B1">B1 (E-W Straight)</option>
                         <option value="B2">B2 (E-W Left Turn)</option>
                         <option value="C">C (Right Turns & Other)</option>
+                    </select>
+                </div>
+
+                <div id="timeRangeMovementSection" class="filter-option movement-filter-container" style="margin-top: 10px; display: none;">
+                    <label for="timeRangeMovement">Movement Filter:</label>
+                    <select id="timeRangeMovement" style="width: 140px;">
+                        <option value="" selected>All Movements</option>
+                        <option value="straight">Straight</option>
+                        <option value="turn">Turn</option>
+                        <option value="uturn">U-turn</option>
                     </select>
                 </div>
                 
@@ -114,6 +134,14 @@
                     <option value="" selected>All Dates</option>
                 </select>
                 <button id="loadDatesBtn" class="btn btn-small">Load Dates</button>
+            </div>
+
+            <div class="panel-section">
+                <label for="vehicleFilterMode">Filter By:</label>
+                <select id="vehicleFilterMode">
+                    <option value="direction" selected>Direction</option>
+                    <option value="movement">Movement</option>
+                </select>
             </div>
             
             <div class="panel-section">
@@ -189,40 +217,7 @@
             </div>
         </div>
 
-        <!-- Intersection Topology Panel -->
-        <div id="topologyPanel" class="control-panel">
-            <div class="panel-header" data-panel="topologyPanel">
-                <h3>Intersection Topology</h3>
-                <div class="collapse-indicator">−</div>
-            </div>
-            <div class="panel-content">
-            
-            <div class="panel-section">
-                <label for="topologyRoadId">Road Intersection:</label>
-                <select id="topologyRoadId">
-                    <option value="A0003" selected>A0003</option>
-                    <option value="A0008">A0008</option>
-                </select>
-            </div>
-            
-            <div class="panel-section">
-                <button id="loadTopologyBtn" class="btn btn-primary">Load Road Network</button>
-                <button id="clearTopologyBtn" class="btn btn-secondary">Clear Network</button>
-            </div>
-            
-            <div class="panel-section">
-                <div id="topologyInfo" class="topology-info">
-                    <div class="status-message">Click "Load Road Network" to display the intersection topology generated from trajectory analysis.</div>
-                </div>
-            </div>
-            
-            <div class="panel-section">
-                <div id="topologyStatus" class="status" style="display: none;">
-                    <span id="topologyStatusText"></span>
-                </div>
-            </div>
-            </div>
-        </div>
+        
 
         <!-- Speed Analysis Panel -->
         <div id="speedPanel" class="control-panel">
@@ -326,6 +321,56 @@
                     <span id="speedStatusText"></span>
                 </div>
             </div>
+            </div>
+        </div>
+
+        <!-- Smoothing Comparison Panel -->
+        <div id="smoothingPanel" class="control-panel">
+            <div class="panel-header" data-panel="smoothingPanel">
+                <h3>Raw vs Smoothed Trajectory</h3>
+                <div class="collapse-indicator">−</div>
+            </div>
+            <div class="panel-content">
+                <div class="panel-section">
+                    <label for="smoothingRoadId">Road Intersection:</label>
+                    <select id="smoothingRoadId">
+                        <option value="A0003" selected>A0003</option>
+                        <option value="A0008">A0008</option>
+                    </select>
+                </div>
+
+                <div class="panel-section">
+                    <label for="smoothingDate">Date:</label>
+                    <input type="date" id="smoothingDate">
+                </div>
+
+                <div class="panel-section">
+                    <label for="smoothingVehicleId">Vehicle ID:</label>
+                    <input type="number" id="smoothingVehicleId" min="1" style="width: 120px;">
+                </div>
+
+                <div class="panel-section">
+                    <label for="smoothingSegId">Seg ID (optional):</label>
+                    <input type="number" id="smoothingSegId" min="0" style="width: 120px;">
+                </div>
+
+                <div class="panel-section">
+                    <button id="loadSmoothingBtn" class="btn btn-primary">Load Trajectories</button>
+                    <button id="clearSmoothingBtn" class="btn btn-secondary">Clear</button>
+                </div>
+
+                <div class="panel-section">
+                    <div id="smoothingStatus" class="status" style="display: none;">
+                        <span id="smoothingStatusText"></span>
+                    </div>
+                </div>
+
+                <div class="panel-section">
+                    <div id="smoothingInfo" class="data-info">
+                        <div id="smoothingRawCount">Raw Points: --</div>
+                        <div id="smoothingSmoothedCount">Smoothed Points: --</div>
+                    </div>
+                </div>
             </div>
         </div>
 

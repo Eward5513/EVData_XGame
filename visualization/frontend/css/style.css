@@ -126,6 +126,16 @@ html, body {
     background-color: rgba(231, 76, 60, 0.1);
 }
 
+#smoothingPanel .panel-header h3 {
+    border-bottom-color: #8e44ad;
+    color: #8e44ad;
+}
+
+#smoothingPanel .collapse-indicator {
+    color: #8e44ad;
+    background-color: rgba(142, 68, 173, 0.1);
+}
+
 /* 表单元素样式 */
 label {
     display: block;

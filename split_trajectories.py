@@ -25,6 +25,12 @@ import os
 MANUAL_OVERRIDES: dict[tuple[str, int, str], dict] = {
     # Add your overrides here:
     ('A0003', 543, '2024-06-20'): {'segments': [(1, 3), (4, None)]},
+    ('A0003', 296, '2024-06-19'): {'segments': [(1, 25), (26, None)]},
+    ('A0008', 132, '2024-06-17'): {'segments': [(1, 2)]},
+    ('A0008', 622, '2024-06-20'): {'segments': [(3, 4)]},
+    ('A0008', 348, '2024-06-19'): {'segments': [(1, 3)]},
+    ('A0003', 1157, '2024-06-21'): {'segments': [(1, 6),(7,None)]},
+    ('A0008', 1665, '2024-06-17'): {'segments': [(1, 10),(11,14),(15,None)]},
 }
 
 # Center-based splitting hysteresis thresholds (meters)
@@ -145,6 +151,10 @@ def apply_manual_overrides_inline(df: pd.DataFrame) -> pd.DataFrame:
     Value supports either:
       - {'segments': [(start1, end1), (start2, end2), ...]} with 1-based inclusive indices; end=None means to the last point.
       - {'cuts': [k1, k2, ...]} with 1-based positions to split AFTER (equivalent to segments [(1,k1), (k1+1,k2), (k2+1,None)]).
+
+    If provided segments/cuts do NOT cover all points within the group, the uncovered
+    points are treated as "not needed" and will be removed from the output. Only the
+    specified ranges are kept and re-labeled with seg_id starting from 0 in listed order.
     """
     if not MANUAL_OVERRIDES:
         return df
@@ -201,23 +211,25 @@ def apply_manual_overrides_inline(df: pd.DataFrame) -> pd.DataFrame:
         if not segments:
             continue
 
-        # Assign seg_id per segment starting from 0
-        seg_id_local = np.empty(n, dtype=np.int64)
-        seg_id_local.fill(-1)
+        # Assign seg_id per segment starting from 0; drop uncovered points
+        seg_id_local = np.full(n, -1, dtype=np.int64)
         cur_seg = 0
         for (a, b) in segments:
             for pos in range(a, b + 1):
                 if 0 <= pos < n:
                     seg_id_local[pos] = cur_seg
             cur_seg += 1
-        # For any positions not covered by segments, keep previous seg_id mapping by aligning order
-        prev_seg_local = out.loc[ordered_idx, 'seg_id'].to_numpy()
-        for pos in range(n):
-            if seg_id_local[pos] < 0:
-                seg_id_local[pos] = prev_seg_local[pos]
 
-        # Write back to dataframe
-        out.loc[ordered_idx, 'seg_id'] = seg_id_local
+        keep_positions = [pos for pos in range(n) if seg_id_local[pos] >= 0]
+        drop_positions = [pos for pos in range(n) if seg_id_local[pos] < 0]
+
+        if drop_positions:
+            drop_indices = [ordered_idx[pos] for pos in drop_positions]
+            out = out.drop(index=drop_indices)
+
+        if keep_positions:
+            keep_indices = [ordered_idx[pos] for pos in keep_positions]
+            out.loc[keep_indices, 'seg_id'] = np.take(seg_id_local, keep_positions)
 
     return out
 def adaptive_split_segment_indices(
@@ -418,7 +430,7 @@ def process_file(
 def main():
     base = '/home/tzhang174/EVData_XGame'
     # Per-road intersection centers (lat, lon) consistent with analyze_direction.py
-    A0003_CENTER = (32.345120, 123.152480)
+    A0003_CENTER = (32.345137, 123.152539)
     A0008_CENTER = (32.327137, 123.181261)
     manual_rules = os.path.join(base, 'manual_splits.csv') if os.path.exists(os.path.join(base, 'manual_splits.csv')) else None
 
