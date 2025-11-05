@@ -1,0 +1,41 @@
+/* Cesium point info popup */
+.point-info {
+    font-family: 'Microsoft YaHei', Arial, sans-serif;
+    font-size: 12px;
+    max-width: 300px;
+}
+
+.point-info h4 {
+    color: #2c3e50;
+    margin-bottom: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #ecf0f1;
+}
+
+.point-info table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.point-info td {
+    padding: 3px 6px;
+    border-bottom: 1px solid #ecf0f1;
+    vertical-align: top;
+}
+
+.point-info td:first-child {
+    font-weight: 500;
+    color: #34495e;
+    white-space: nowrap;
+    width: 80px;
+}
+
+.point-info td:last-child {
+    color: #2c3e50;
+}
+
+
+
+
+
+

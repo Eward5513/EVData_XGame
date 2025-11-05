@@ -1,0 +1,19 @@
+/* Cesium UI adjustments */
+.cesium-viewer-toolbar {
+    top: 10px;
+    right: 10px;
+}
+
+.cesium-widget-credits {
+    display: none !important;
+}
+
+.cesium-viewer-bottom {
+    display: none;
+}
+
+
+
+
+
+

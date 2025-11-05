@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Analyze driving direction for each segment in A0003_split.csv and A0008_split.csv
-Classify directions based on trajectory relative to intersection center:
-A1: North-South straight
-A2: Left turn toward North/South (E->S or W->N)
-B1: East-West straight  
-B2: Left turn toward East/West (N->E or S->W)
-C: Other directions (including right turns, U-turns, etc.)
+Analyze driving direction for each segment in A0003_merged.csv and A0008_merged.csv
+Fine-grained classification based on trajectory relative to intersection center:
+
+- A1: East-West straight (E↔W)
+- B1: North-South straight (N↔S)
+- A2-1: Left turn to East (exit heading East)
+- A2-2: Left turn to West (exit heading West)
+- B2-1: Left turn to North (exit heading North)
+- B2-2: Left turn to South (exit heading South)
+- A3-1: Right turn to East (exit heading East)
+- A3-2: Right turn to West (exit heading West)
+- B3-1: Right turn to North (exit heading North)
+- B3-2: Right turn to South (exit heading South)
+- C: Other/undecidable (fallback)
+- U: U-turn (manual only)
 
 Intersection centers (per road):
 - A0003: lon=123.152539, lat=32.345137
@@ -17,6 +25,8 @@ Intersection centers (per road):
 import pandas as pd
 import numpy as np
 import math
+import os
+from config import BASE_DIR, CENTERS
 
 # Default intersection center (fallback; functions now take explicit center parameters)
 INTERSECTION_CENTER_LON = 123.152539
@@ -34,14 +44,18 @@ TWO_POINT_STRAIGHT_MAX_DELTA_DEG = 20.0    # maximum angle change to be consider
 TWO_POINT_MAX_RADIUS_M = 150.0             # both points should be reasonably near the center
 #############################################
 # Manual direction overrides (hardcoded)
-# Key: (road_id, vehicle_id, date, seg_id) -> value in {'A1','A2','B1','B2','C'}
+# Key: (road_id, vehicle_id, date, seg_id) -> value in {'A1','B1','A2-*','B2-*','A3-*','B3-*','C','U'}
 # Example:
 # MANUAL_DIRECTION_OVERRIDES = {
 #     ('A0003', 543, '2024-06-20', 0): 'B1',
 # }
 MANUAL_DIRECTION_OVERRIDES: dict[tuple[str, int, str, int], str] = {
-    ('A0003', 300, '2024-06-20', 0): 'A2',
-    ('A0008', 1665, '2024-06-17', 0): 'B2',
+    ('A0003', 300, '2024-06-20', 0): 'B2-1',
+    # ('A0008', 1665, '2024-06-17', 0): 'B2',
+    ('A0008', 1388, '2024-06-21', 3): 'B2-1',
+    ('A0003', 2125, '2024-06-19', 0): 'A3-2',
+    ('A0003', 1595, '2024-06-17', 0): 'A1-2',
+    ('A0003', 252, '2024-06-19', 0): 'U',
 }
 
 
@@ -160,10 +174,10 @@ def angle_to_cardinal(angle_deg: float, tol: float = 45.0) -> str | None:
 def classify_two_point_by_polar_angle(trajectory_df, center_lat: float, center_lon: float) -> str:
     """
     Two-point classification using quadrant-based polar angles:
-    - Straight (no threshold): opposite sides along same axis → A1 (N/S) or B1 (E/W)
-    - Left turns (require sufficient angle change):
-        * W→N or E→S → A2
-        * N→E or S→W → B2
+    - Straight (no threshold): opposite sides along same axis → A1 (E/W) or B1 (N/S)
+    - Left/Right turns (require sufficient angle change):
+        * Use approach heading as the opposite of the start quadrant (E↔W, N↔S)
+        * Apply standard left/right sets and output fine-grained label by exit heading
     - Otherwise C
     """
     start = trajectory_df.iloc[0]
@@ -179,16 +193,27 @@ def classify_two_point_by_polar_angle(trajectory_df, center_lat: float, center_l
     # Straight across center: opposite sides on same axis
     if q1 != q2:
         if {q1, q2} == {'E', 'W'}:
-            return 'B1'
+            # Use end quadrant as exit heading
+            return 'A1-1' if q2 == 'E' else 'A1-2'
         if {q1, q2} == {'N', 'S'}:
-            return 'A1'
+            return 'B1-1' if q2 == 'N' else 'B1-2'
 
-    # Left turn: require sufficient angle change
+    # Left/Right turn: require sufficient angle change
     if delta >= TWO_POINT_MIN_ANGLE_DELTA_DEG:
-        if (q1 == 'W' and q2 == 'N') or (q1 == 'E' and q2 == 'S'):
-            return 'A2'
-        if (q1 == 'N' and q2 == 'E') or (q1 == 'S' and q2 == 'W'):
-            return 'B2'
+        # Derive approach direction as opposite of start quadrant
+        def _opposite(card: str) -> str:
+            if card == 'E':
+                return 'W'
+            if card == 'W':
+                return 'E'
+            if card == 'N':
+                return 'S'
+            return 'N'
+        frm = _opposite(q1)
+        if _is_left_turn(frm, q2):
+            return _turn_label(q2, True)
+        if _is_right_turn(frm, q2):
+            return _turn_label(q2, False)
 
     return 'C'
 
@@ -236,20 +261,51 @@ def _is_right_turn(from_dir: str, to_dir: str) -> bool:
     right_turns = {('N', 'E'), ('E', 'S'), ('S', 'W'), ('W', 'N')}
     return (from_dir, to_dir) in right_turns
 
+def _turn_label(to_dir: str, left: bool) -> str:
+    """Map exit cardinal direction to fine-grained left/right labels."""
+    if left:
+        mapping = {'E': 'A2-1', 'W': 'A2-2', 'N': 'B2-1', 'S': 'B2-2'}
+    else:
+        mapping = {'E': 'A3-1', 'W': 'A3-2', 'N': 'B3-1', 'S': 'B3-2'}
+    return mapping[to_dir]
+
+
+# --- Straight refinement helpers ---
+def _straight_fine_from_card(card: str) -> str:
+    if card == 'E':
+        return 'A1-1'
+    if card == 'W':
+        return 'A1-2'
+    if card == 'N':
+        return 'B1-1'
+    return 'B1-2'  # 'S'
+
+
+def _refine_straight_label(base: str | None,
+                           prev_lab: str | None,
+                           center_lab: str | None,
+                           next_lab: str | None) -> str | None:
+    """Refine A1/B1 to fine-grained using available step cardinals (prefer exit/next)."""
+    if base not in ('A1', 'B1'):
+        return base
+    for lab in (next_lab, center_lab, prev_lab):
+        if lab in ('E', 'W', 'N', 'S'):
+            return _straight_fine_from_card(lab)
+    return base
+
 def _normalize_label(label: str | None) -> str | None:
     """
     Normalize classification label for external use.
-    - Map right turns 'R' to 'C' per current business rule.
-    - Pass through A1/A2/B1/B2 and None unchanged.
+    - Pass through A1/B1 and fine-grained A2-*, B2-*, A3-*, B3-* unchanged.
+    - None remains None.
     """
-    if label == 'R':
-        return 'C'
     return label
 
 def _classify_turn(prev_lab: str | None, next_lab: str | None) -> str | None:
     """
     Classify turn based on entrance and exit directions.
-    Returns A1 (NS straight), A2 (left to NS), B1 (EW straight), B2 (left to EW), R (right turn), or None.
+    Returns A1 (EW straight), B1 (NS straight),
+    A2-*/B2-* for left turns by exit heading, A3-*/B3-* for right turns by exit heading, or None.
     """
     if not prev_lab or not next_lab:
         return None
@@ -265,20 +321,18 @@ def _classify_turn(prev_lab: str | None, next_lab: str | None) -> str | None:
             ('E', 'E'), ('E', 'W'), ('W', 'E'), ('W', 'W')   # EW axis
         }
         if (prev_lab, next_lab) in straight_pairs:
-            return 'A1' if prev_ax == 'NS' else 'B1'
+            # Flip mapping: EW → A1, NS → B1
+            return 'A1' if prev_ax == 'EW' else 'B1'
         # Same axis but invalid combination (shouldn't happen with current logic)
         return None
     
-    # Turn: check if it's a left turn
+    # Turn: left/right with fine-grained exit direction
     if _is_left_turn(prev_lab, next_lab):
-        # Determine category by destination axis
-        return 'A2' if next_ax == 'NS' else 'B2'
-    
-    # Right turn
+        return _turn_label(next_lab, True)
     if _is_right_turn(prev_lab, next_lab):
-        return 'R'
+        return _turn_label(next_lab, False)
     
-    # Right turn or U-turn → C
+    # U-turn or ambiguous → None
     return None
 
 def classify_near_center_multistep(trajectory_df, center_lat: float, center_lon: float,
@@ -288,8 +342,8 @@ def classify_near_center_multistep(trajectory_df, center_lat: float, center_lon:
     Near-center multi-step classification per spec:
     1) Find the nearest step (segment). If center projection falls within that segment, use the
        previous step, the center step, and the next step to determine dominant axes:
-       - If all three have the same dominant axis → straight: A1 (NS) or B1 (EW)
-       - If the dominant axes of previous and next differ → turn: A2 (EW→NS) or B2 (NS→EW)
+       - If all three have the same dominant axis → straight: A1 (EW) or B1 (NS)
+       - If the dominant axes of previous and next differ → turn: output fine-grained left/right by exit heading
        - If prev/next label missing, keep looking one more step outward.
     2) Else (nearest is a point): pick the point nearest to center, consider two steps before
        and two steps after. Determine prev/center/next axes similarly and apply the same rules.
@@ -373,22 +427,22 @@ def classify_near_center_multistep(trajectory_df, center_lat: float, center_lon:
         # Prefer full two-sided entrance/exit classification
         result = _classify_turn(prev_lab, next_lab)
         if result:
+            result = _refine_straight_label(result, prev_lab, center_lab, next_lab)
             return _normalize_label(result)
         # Try using the center step when one side is missing
         result = _classify_turn(prev_lab, center_lab)
         if result:
+            result = _refine_straight_label(result, prev_lab, center_lab, next_lab)
             return _normalize_label(result)
         result = _classify_turn(center_lab, next_lab)
         if result:
+            result = _refine_straight_label(result, prev_lab, center_lab, next_lab)
             return _normalize_label(result)
         
-        # Fallback: if only one effective step exists, classify straight by its axis
+        # Fallback: if only one effective step exists, classify straight by its axis and cardinal
         for lab in (center_lab, prev_lab, next_lab):
-            ax = _axis_from_label(lab)
-            if ax == 'NS':
-                return 'A1'
-            if ax == 'EW':
-                return 'B1'
+            if lab in ('E', 'W', 'N', 'S'):
+                return _straight_fine_from_card(lab)
 
     # Case 2: nearest is a point (or step projection not inside)
     if best_p is not None and best_d_point <= near_radius_m:
@@ -419,22 +473,22 @@ def classify_near_center_multistep(trajectory_df, center_lat: float, center_lon:
         # Prefer entrance/exit pair
         result = _classify_turn(prev_lab, next_lab)
         if result:
+            result = _refine_straight_label(result, prev_lab, center_lab, next_lab)
             return _normalize_label(result)
         # Try pairs using the center step
         result = _classify_turn(prev_lab, center_lab)
         if result:
+            result = _refine_straight_label(result, prev_lab, center_lab, next_lab)
             return _normalize_label(result)
         result = _classify_turn(center_lab, next_lab)
         if result:
+            result = _refine_straight_label(result, prev_lab, center_lab, next_lab)
             return _normalize_label(result)
 
-        # Fallback: single-step straight by axis
+        # Fallback: single-step straight by axis and cardinal
         for lab in (center_lab, prev_lab, next_lab):
-            ax = _axis_from_label(lab)
-            if ax == 'NS':
-                return 'A1'
-            if ax == 'EW':
-                return 'B1'
+            if lab in ('E', 'W', 'N', 'S'):
+                return _straight_fine_from_card(lab)
 
     return None
 
@@ -468,9 +522,9 @@ def analyze_trajectory_direction(trajectory_df, center_lat: float, center_lon: f
     if total_distance < 10:  # Total displacement < 10m, consider as stationary or irregular
         return 'C'
 
-    # Use near-center multi-step classification with 50m threshold only
+    # Use near-center multi-step classification with 100m threshold only
     result = classify_near_center_multistep(trajectory_df, center_lat, center_lon,
-                                            near_radius_m=50.0, axis_ratio=1.4)
+                                            near_radius_m=115.0, axis_ratio=1.4)
     # Return result if valid, otherwise default to 'C'
     return result if result else 'C'
 
@@ -483,6 +537,29 @@ def process_dataframe(df: pd.DataFrame, source_label: str, center_lat: float, ce
         manual_key = (str(road_id) if road_id is not None else '', int(vehicle_id), str(date), int(seg_id))
         if manual_key in MANUAL_DIRECTION_OVERRIDES:
             direction = MANUAL_DIRECTION_OVERRIDES[manual_key]
+            # Post-refine manual straight (A1/B1) to fine-grained using segment
+            if direction in ('A1', 'B1'):
+                # Try classifier first to infer exit cardinal
+                cand = classify_near_center_multistep(segment, center_lat, center_lon,
+                                                      near_radius_m=115.0, axis_ratio=1.4)
+                if cand in ('A1-1', 'A1-2', 'B1-1', 'B1-2'):
+                    direction = cand
+                else:
+                    # Fallback: derive from last effective step
+                    df_sorted = segment.sort_values('collectiontime').reset_index(drop=True)
+                    lats = df_sorted['latitude'].to_numpy()
+                    lons = df_sorted['longitude'].to_numpy()
+                    last_lab = None
+                    for i in range(len(lats) - 2, -1, -1):
+                        lab = _step_axis_label(lats, lons, i, i + 1, axis_ratio=1.4)
+                        if lab is not None:
+                            last_lab = lab
+                            break
+                    if last_lab in ('E', 'W', 'N', 'S'):
+                        direction = _straight_fine_from_card(last_lab)
+                    else:
+                        # Ultimate fallback: keep axis but choose canonical exit variant
+                        direction = 'A1-1' if direction == 'A1' else 'B1-1'
         else:
             direction = analyze_trajectory_direction(segment, center_lat, center_lon)
         records.append({
@@ -495,16 +572,16 @@ def process_dataframe(df: pd.DataFrame, source_label: str, center_lat: float, ce
     return records
 
 def main():
-    print("Starting to read split trajectory data files...")
+    print("Starting to read merged trajectory data files...")
     
     # Read pre-split data files
-    print("Reading A0003_split.csv...")
-    df1 = pd.read_csv('/home/tzhang174/EVData_XGame/A0003_split.csv')
-    print(f"A0003_split.csv: {len(df1)} records")
+    print("Reading A0003_merged.csv...")
+    df1 = pd.read_csv(os.path.join(BASE_DIR, 'data', 'A0003_merged.csv'))
+    print(f"A0003_merged.csv: {len(df1)} records")
     
-    print("Reading A0008_split.csv...")
-    df2 = pd.read_csv('/home/tzhang174/EVData_XGame/A0008_split.csv')
-    print(f"A0008_split.csv: {len(df2)} records")
+    print("Reading A0008_merged.csv...")
+    df2 = pd.read_csv(os.path.join(BASE_DIR, 'data', 'A0008_merged.csv'))
+    print(f"A0008_merged.csv: {len(df2)} records")
     
     # Validate columns per source (process separately; do not combine)
     required_cols = ['vehicle_id', 'date', 'seg_id', 'collectiontime', 'latitude', 'longitude']
@@ -514,10 +591,7 @@ def main():
             raise ValueError(f"Missing required columns in {name} split data: {missing}")
     
     # Intersection centers per road
-    centers: dict[str, tuple[float, float]] = {
-        'A0003': (32.345137, 123.152539),  # (lat, lon)
-        'A0008': (32.327137, 123.181261),  # (lat, lon)
-    }
+    centers: dict[str, tuple[float, float]] = CENTERS
 
     # Analyze each source independently with its corresponding center, then merge results
     records = []
@@ -536,7 +610,8 @@ def main():
     df_output = df_output.sort_values(sort_cols).reset_index(drop=True)
 
     # Save results
-    output_file = '/home/tzhang174/EVData_XGame/direction.csv'
+    output_file = os.path.join(BASE_DIR, 'data', 'direction.csv')
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
     df_output.to_csv(output_file, index=False)
     print(f"\n=== Results Saved ===")
     print(f"Output file: {output_file}")
@@ -552,5 +627,4 @@ def main():
     sample_df = df_output.head(10)
     print(sample_df.to_string(index=False))
 
-if __name__ == "__main__":
-    main()
+## Module is intended to be imported and driven via main.py

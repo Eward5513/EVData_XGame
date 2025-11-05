@@ -10,18 +10,15 @@ import os
 import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
+from config import BASE_DIR, CENTERS
 rng = np.random.default_rng(42)
 
-# ---------- Configuration (hardcoded values) ----------
-CSV_PATHS = ['A0003_split.csv', 'A0008_split.csv']  # Input CSVs to process
-# Optional global defaults (fallback if road-specific values below are missing)
-LAT0 = None
-LON0 = None
-# Intersection origin hints: seeded from analyze_direction.py (lat, lon)
-INTERSECTION_ORIGINS = {
-    'A0003': {'lat': 32.345137, 'lon': 123.152539},
-    'A0008': {'lat': 32.327137, 'lon': 123.181261},
-}
+# ---------- Configuration ----------
+# Input CSVs to process (produced by split_trajectories)
+INPUT_FILES = [
+    os.path.join(BASE_DIR, 'data', 'A0003_split.csv'),
+    os.path.join(BASE_DIR, 'data', 'A0008_split.csv'),
+]
 K = 4                        # Number of approach direction clusters
 V_STOP = 0.5                 # Stationary speed threshold (m/s)
 V_GO = 1.5                   # Start-moving speed threshold (m/s)
@@ -30,6 +27,39 @@ RANSAC_THRESH = 1.5          # RANSAC inlier distance threshold (m)
 LATERAL_BAND = 2.0           # Lateral band width for stop-line estimation (m)
 STOP_QUANTILE = 0.15         # Quantile for conservative stop-line estimate
 WRITE_GEOJSON = False        # If True, also write a GeoJSON per CSV
+
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+DIRECTION_FILE = os.path.join(DATA_DIR, 'direction.csv')
+AXIS_POLY_BIN_M = 50.0       # Bin size (meters) to build piecewise axis/lane polyline
+AXIS_POLY_MIN_POINTS = 5     # Min points per bin to keep a vertex
+
+# Direction-grouped labels per inbound side (W,E,S,N)
+LANE_GROUPS = {
+    'W': {
+        'straight': ['A1-1', 'A1-2'],
+        'left': ['B2-1', 'A3-2'],
+        'right': ['A2-2', 'B3-2'],
+        'stop_labels': ['A1-1', 'B2-1', 'B3-2']
+    },
+    'E': {
+        'straight': ['A1-1', 'A1-2'],
+        'left': ['B2-2', 'A3-1'],
+        'right': ['A2-1', 'B3-1'],
+        'stop_labels': ['A1-2', 'B2-2', 'B3-1']
+    },
+    'S': {
+        'straight': ['B1-1', 'B1-2'],
+        'left': ['A2-2', 'B3-2'],
+        'right': ['B2-2', 'A3-1'],
+        'stop_labels': ['B1-1', 'A2-2', 'A3-1']
+    },
+    'N': {
+        'straight': ['B1-1', 'B1-2'],
+        'left': ['A2-1', 'B3-1'],
+        'right': ['B2-1', 'A3-2'],
+        'stop_labels': ['B1-2', 'A2-1', 'A3-2']
+    }
+}
 
 # ---------- Utilities ----------
 
@@ -263,6 +293,120 @@ def cluster_directions(points_df: pd.DataFrame, K=4) -> np.ndarray:
     labels = km.fit_predict(X)
     return labels  # 0..K-1
 
+def load_direction_df(path: str = DIRECTION_FILE) -> pd.DataFrame:
+    try:
+        return pd.read_csv(path)
+    except Exception as exc:
+        print(f"[Error] Failed to read direction file '{path}': {exc}")
+        return pd.DataFrame()
+
+def _triplet_key(vid, date, seg) -> Tuple[int, str, int]:
+    """Normalize (vehicle_id, date, seg_id) to int, str, int tuple."""
+    def _to_int(x):
+        try:
+            return int(x)
+        except Exception:
+            try:
+                return int(float(x))
+            except Exception:
+                return -1
+    return (_to_int(vid), str(date), _to_int(seg))
+
+def build_triplet_set_for_labels(dir_df: pd.DataFrame, road_id: str, labels: List[str]) -> set:
+    """Return set of (vehicle_id, date, seg_id) triplets for given road_id and label list."""
+    if dir_df is None or len(dir_df) == 0:
+        return set()
+    sub = dir_df[(dir_df['road_id'] == road_id) & (dir_df['direction'].astype(str).isin(labels))]
+    out = set()
+    for _, r in sub.iterrows():
+        out.add(_triplet_key(r['vehicle_id'], r['date'], r['seg_id']))
+    return out
+
+def filter_df_by_triplets(df: pd.DataFrame, triplets: set) -> pd.DataFrame:
+    if not triplets:
+        return df.iloc[0:0].copy()
+    def _keep(row):
+        return _triplet_key(row['vehicle_id'], row['date'], row['seg_id']) in triplets
+    return df[df.apply(_keep, axis=1)].copy()
+
+def collect_points_for_labels(df_raw: pd.DataFrame, dir_df: pd.DataFrame, road_id: str, labels: List[str]) -> np.ndarray:
+    trip = build_triplet_set_for_labels(dir_df, road_id, labels)
+    dff = filter_df_by_triplets(df_raw, trip)
+    return dff[['_x', '_y']].to_numpy()
+
+def collect_stop_points_for_labels(df_raw: pd.DataFrame, dir_df: pd.DataFrame, road_id: str, labels: List[str]) -> pd.DataFrame:
+    trip = build_triplet_set_for_labels(dir_df, road_id, labels)
+    dff = filter_df_by_triplets(df_raw, trip)
+    return extract_last_stop_points(dff, v_stop=V_STOP, v_go=V_GO, lookahead_s=LOOKAHEAD_S)
+
+def fit_two_lanes_from_points(P: np.ndarray, base_line: Line) -> List[Line]:
+    """Split by lateral offset into two clusters (K=2) and fit TLS line per cluster.
+    Returns list of 1 or 2 Line objects depending on viability.
+    """
+    if P is None or len(P) < 2:
+        return []
+    # Lateral offsets to base line
+    d = (P @ base_line.n - base_line.rho).reshape(-1, 1)
+    try:
+        km = KMeans(n_clusters=2, n_init=10, random_state=42)
+        lab = km.fit_predict(d)
+    except Exception:
+        # Degenerate: return a single lane from all points
+        return [line_from_points_tls(P)]
+    lanes: List[Line] = []
+    for k in (0, 1):
+        Q = P[lab == k]
+        if len(Q) >= 2:
+            lanes.append(line_from_points_tls(Q))
+    if len(lanes) == 0:
+        lanes = [line_from_points_tls(P)]
+    return lanes
+
+def polyline_along_s(P: np.ndarray, center_xy: np.ndarray, t_dir: np.ndarray,
+                     lon0: float, lat0: float,
+                     bin_m: float = AXIS_POLY_BIN_M, min_pts: int = AXIS_POLY_MIN_POINTS) -> dict | None:
+    """Build a piecewise polyline by binning points along s = (p-center)·t_dir."""
+    if P is None or len(P) == 0:
+        return None
+    s_vals = (P - center_xy.reshape(1, 2)) @ t_dir
+    if not (np.isfinite(s_vals).all()):
+        return None
+    s_min = float(np.min(s_vals))
+    s_max = float(np.max(s_vals))
+    if not (np.isfinite(s_min) and np.isfinite(s_max)) or s_max <= s_min + 1.0:
+        return None
+    num_bins = max(1, int(np.ceil((s_max - s_min) / bin_m)))
+    xs = np.linspace(s_min, s_max, num_bins + 1)
+    coords = []
+    for i in range(num_bins):
+        a = xs[i]
+        b = xs[i + 1]
+        mask = (s_vals >= a) & (s_vals <= b)
+        if np.count_nonzero(mask) >= 1:
+            p_mean = P[mask].mean(axis=0)
+            lon_i, lat_i = xy_to_lonlat(p_mean[0], p_mean[1], lon0, lat0)
+            coords.append([float(lon_i), float(lat_i)])
+    if len(coords) >= 2:
+        return {'coordinates': coords}
+    return None
+
+# Curves to build from specified label pairs
+CURVE_PAIRS = [
+    (("A2-1", "B3-1"), "E_right"),
+    (("B3-2", "A2-2"), "W_right"),
+    (("A3-2", "B2-1"), "W_left"),
+    (("B2-2", "A3-1"), "E_left"),
+]
+
+def build_curve_poly(df_raw: pd.DataFrame, dir_df: pd.DataFrame, road_id: str,
+                     label_pair: Tuple[str, str], center_xy: np.ndarray,
+                     lon0: float, lat0: float) -> dict | None:
+    P = collect_points_for_labels(df_raw, dir_df, road_id, list(label_pair))
+    if P is None or len(P) < 2:
+        return None
+    t_dir = pca_tls_direction(P)
+    return polyline_along_s(P, center_xy, t_dir, lon0, lat0)
+
 def fit_axis_per_cluster(points_df: pd.DataFrame, labels: np.ndarray,
                          ransac_thresh=1.5) -> Dict[int, Dict]:
     """
@@ -299,46 +443,159 @@ def stopline_along_axis(points_df: pd.DataFrame, line: Line, center_xy: np.ndarr
     return s_stop
 
 def main():
-    for csv_path in CSV_PATHS:
+    for csv_path in INPUT_FILES:
         base = os.path.basename(csv_path)
         name_no_ext = base.rsplit('.', 1)[0]
         road_id = name_no_ext.split('_')[0] if '_' in name_no_ext else name_no_ext
         df = pd.read_csv(csv_path)
-        # Coarse origin for local projection; prefer predefined origins, otherwise use medians
-        origin_hint = INTERSECTION_ORIGINS.get(road_id, {})
-        lat_pref = origin_hint.get('lat', LAT0)
-        lon_pref = origin_hint.get('lon', LON0)
-        lat0 = lat_pref if lat_pref is not None else float(np.median(df['latitude']))
-        lon0 = lon_pref if lon_pref is not None else float(np.median(df['longitude']))
+        # Coarse origin for local projection; prefer configured centers, otherwise use medians
+        c_hint = CENTERS.get(road_id)
+        center_lat_hint = float(c_hint[0]) if c_hint is not None else None
+        center_lon_hint = float(c_hint[1]) if c_hint is not None else None
+        lat0 = center_lat_hint if center_lat_hint is not None else float(np.median(df['latitude']))
+        lon0 = center_lon_hint if center_lon_hint is not None else float(np.median(df['longitude']))
 
         # 1) Compute headings and local coordinates
         df = compute_heading_per_track(df, lon0, lat0)
 
-        # 2) Extract last-stop points before moving
-        pts = extract_last_stop_points(df,
-                                       v_stop=V_STOP,
-                                       v_go=V_GO,
-                                       lookahead_s=LOOKAHEAD_S)
-        if len(pts) < 8:
-            print(f"[Warn] Only {len(pts)} candidate stop points found for {csv_path}; results may be unstable. "
-                  f"Consider relaxing thresholds or using a longer time window.")
+        # 2) Load direction labels for this road
+        dir_df_all = load_direction_df(DIRECTION_FILE)
+        if dir_df_all.empty:
+            raise RuntimeError("direction.csv not available for direction-based grouping")
+        dir_df = dir_df_all[dir_df_all['road_id'] == road_id].copy()
 
-        # 3) Cluster approach directions (default K=4)
-        labels = cluster_directions(pts, K=K)
+        # 3) Fit global EW and NS axes from combined straight labels to estimate center
+        # Updated: NS from A1, EW from B1
+        P_NS = collect_points_for_labels(df, dir_df, road_id, ['A1-1', 'A1-2'])
+        P_EW = collect_points_for_labels(df, dir_df, road_id, ['B1-1', 'B1-2'])
+        if len(P_NS) < 2 or len(P_EW) < 2:
+            # Fallback to configured center if insufficient to estimate center
+            center_lat = center_lat_hint if center_lat_hint is not None else float(np.median(df['latitude']))
+            center_lon = center_lon_hint if center_lon_hint is not None else float(np.median(df['longitude']))
+            cx, cy = lonlat_to_xy(np.array([center_lon]), np.array([center_lat]), lon0, lat0)
+            center_xy = np.array([float(cx[0]), float(cy[0])])
+            # Still compute EW/NS if possible (may be missing)
+            line_NS, inliers_NS = (line_from_points_tls(P_NS), np.ones(len(P_NS), dtype=bool)) if len(P_NS) >= 2 else (None, None)
+            line_EW, inliers_EW = (line_from_points_tls(P_EW), np.ones(len(P_EW), dtype=bool)) if len(P_EW) >= 2 else (None, None)
+        else:
+            line_NS, inliers_NS = ransac_line(P_NS, thresh=RANSAC_THRESH, iters=400, min_inliers=max(6, len(P_NS)//3))
+            line_EW, inliers_EW = ransac_line(P_EW, thresh=RANSAC_THRESH, iters=400, min_inliers=max(6, len(P_EW)//3))
+            center_xy = lsq_intersection_center([line_NS, line_EW], weights=[float(inliers_NS.sum()), float(inliers_EW.sum())])
+            center_lon, center_lat = xy_to_lonlat(center_xy[0], center_xy[1], lon0, lat0)
 
-        # 4) Fit an axis for each direction with RANSAC+TLS
-        axes = fit_axis_per_cluster(pts.assign(label=labels), labels, ransac_thresh=RANSAC_THRESH)
+        # 4) Per-side straight base axes and two-lane split
+        side_results = {}
+        # Determine side assignment by sign of s = (p-center)·t along axis orientation
+        # For EW, use t.x sign to map s>=0 to East if t.x>=0, else to West
+        # For NS, use t.y sign to map s>=0 to North if t.y>=0, else to South
+        # Build helper to clone a Line object
+        def _clone_line(L: Line) -> Line:
+            return Line(n=L.n.copy(), rho=float(L.rho), t=L.t.copy(), angle_deg=float(L.angle_deg))
 
-        if len(axes) < 2:
-            raise RuntimeError(f"Fewer than 2 valid directions for {csv_path}; cannot compute center point. Check data or thresholds.")
+        # Precompute signs and s-values for combined point sets
+        if P_EW is not None and len(P_EW) >= 2 and line_EW is not None:
+            s_EW = (P_EW - center_xy.reshape(1, 2)) @ line_EW.t
+            signE = 1.0 if line_EW.t[0] >= 0.0 else -1.0
+        else:
+            s_EW = None
+            signE = 1.0
+        if P_NS is not None and len(P_NS) >= 2 and line_NS is not None:
+            s_NS = (P_NS - center_xy.reshape(1, 2)) @ line_NS.t
+            signN = 1.0 if line_NS.t[1] >= 0.0 else -1.0
+        else:
+            s_NS = None
+            signN = 1.0
 
-        # 5) Compute intersection center as the least-squares point
-        lines = [v['line'] for v in axes.values()]
-        weights = [float(v['inliers_mask'].sum()) for v in axes.values()]
-        center_xy = lsq_intersection_center(lines, weights=weights)
-        center_lon, center_lat = xy_to_lonlat(center_xy[0], center_xy[1], lon0, lat0)
+        for side in ['W', 'E']:
+            if line_EW is None or s_EW is None:
+                side_results[side] = {
+                    'base_axis': None,
+                    'inliers_mask': None,
+                    'points': np.zeros((0, 2)),
+                    'lanes': []
+                }
+                continue
+            if side == 'E':
+                mask = (signE * s_EW) >= 0.0
+            else:  # 'W'
+                mask = (signE * s_EW) < 0.0
+            P_side = P_EW[mask]
+            base_axis = _clone_line(line_EW)
+            lanes = fit_two_lanes_from_points(P_side, base_axis) if len(P_side) >= 2 else []
+            side_results[side] = {
+                'base_axis': base_axis,
+                'inliers_mask': np.ones(len(P_side), dtype=bool),
+                'points': P_side,
+                'lanes': lanes
+            }
 
-        # 6) Estimate stop-line position along each approach axis
+        for side in ['S', 'N']:
+            if line_NS is None or s_NS is None:
+                side_results[side] = {
+                    'base_axis': None,
+                    'inliers_mask': None,
+                    'points': np.zeros((0, 2)),
+                    'lanes': []
+                }
+                continue
+            if side == 'N':
+                mask = (signN * s_NS) >= 0.0
+            else:  # 'S'
+                mask = (signN * s_NS) < 0.0
+            P_side = P_NS[mask]
+            base_axis = _clone_line(line_NS)
+            lanes = fit_two_lanes_from_points(P_side, base_axis) if len(P_side) >= 2 else []
+            side_results[side] = {
+                'base_axis': base_axis,
+                'inliers_mask': np.ones(len(P_side), dtype=bool),
+                'points': P_side,
+                'lanes': lanes
+            }
+
+        # 5) Orient all axis tangents outward per side (if available)
+        for side, res in side_results.items():
+            if res['base_axis'] is None or len(res['points']) == 0:
+                continue
+            line = res['base_axis']
+            mean_vec = res['points'].mean(axis=0) - center_xy
+            if (mean_vec @ line.t) < 0:
+                line.t = -line.t
+                line.n = -line.n
+                line.rho = -line.rho
+                line.angle_deg = (line.angle_deg + 180.0) % 360.0
+            # Orient lanes similarly
+            for ln in res['lanes']:
+                if (mean_vec @ ln.t) < 0:
+                    ln.t = -ln.t
+                    ln.n = -ln.n
+                    ln.rho = -ln.rho
+                    ln.angle_deg = (ln.angle_deg + 180.0) % 360.0
+
+        # 6) Stopline per side (use union of stop labels)
+        stoplines = {}
+        for side in ['W', 'E', 'S', 'N']:
+            base_axis = side_results[side]['base_axis']
+            if base_axis is None:
+                stoplines[side] = {'s_stop_m_from_center': None, 'method': f'quantile_{STOP_QUANTILE}', 'labels': LANE_GROUPS[side]['stop_labels']}
+                continue
+            pts_stop = collect_stop_points_for_labels(df, dir_df, road_id, LANE_GROUPS[side]['stop_labels'])
+            s_stop = stopline_along_axis(pts_stop, base_axis, center_xy, lateral_band=LATERAL_BAND, use_quantile=STOP_QUANTILE)
+            stoplines[side] = {
+                's_stop_m_from_center': float(s_stop) if s_stop is not None and np.isfinite(s_stop) else None,
+                'method': f'quantile_{STOP_QUANTILE}' if not np.isnan(STOP_QUANTILE) else 'median',
+                'labels': LANE_GROUPS[side]['stop_labels']
+            }
+
+        # 7) (Removed) Side-based turn polylines; we only keep four specified curves below
+        turn_lanes = {s: {'left': None, 'right': None} for s in ['W', 'E', 'S', 'N']}
+
+        # Build specified curves forming the road network
+        curves = []
+        for (labels_pair, name) in CURVE_PAIRS:
+            poly = build_curve_poly(df, dir_df, road_id, labels_pair, center_xy, lon0, lat0)
+            curves.append({'name': name, 'labels': list(labels_pair), 'polyline': poly})
+
+        # 8) Compose output JSON
         out = {
             'center_point': {
                 'x_m': float(center_xy[0]),
@@ -346,63 +603,82 @@ def main():
                 'lon': center_lon,
                 'lat': center_lat
             },
+            'lanes_straight': {},
+            'lanes_turn': {},
+            'stoplines': stoplines,
             'approaches': []
         }
 
-        # For friendlier labels, map axis angles to compass sectors (coarse)
-        lab_to_dir = {}
-        for lab, v in axes.items():
-            ang = v['line'].angle_deg  # Axis angle: 0=East, 90=North
-            # Normalize to 0..360
-            a = ang % 360.0
-            # Coarse mapping
-            dirs = ['E','NE','N','NW','W','SW','S','SE']
-            idx = int(((a + 22.5) % 360) // 45)
-            lab_to_dir[lab] = dirs[idx]
+        # Road network summary: axes and curves
+        out['road_network'] = {
+            'axes': {
+                'NS': {
+                    'angle_deg': float(line_NS.angle_deg) if 'line_NS' in locals() and line_NS is not None else None,
+                    'n': [float(line_NS.n[0]), float(line_NS.n[1])] if 'line_NS' in locals() and line_NS is not None else None,
+                    't': [float(line_NS.t[0]), float(line_NS.t[1])] if 'line_NS' in locals() and line_NS is not None else None,
+                    'rho_m': float(line_NS.rho) if 'line_NS' in locals() and line_NS is not None else None,
+                },
+                'EW': {
+                    'angle_deg': float(line_EW.angle_deg) if 'line_EW' in locals() and line_EW is not None else None,
+                    'n': [float(line_EW.n[0]), float(line_EW.n[1])] if 'line_EW' in locals() and line_EW is not None else None,
+                    't': [float(line_EW.t[0]), float(line_EW.t[1])] if 'line_EW' in locals() and line_EW is not None else None,
+                    'rho_m': float(line_EW.rho) if 'line_EW' in locals() and line_EW is not None else None,
+                },
+            },
+            'curves': [c for c in curves if c['polyline'] is not None]
+        }
 
-        for lab, v in axes.items():
-            line = v['line']
-            # Orient tangent outward: if mean(point - center) · t is negative, flip
-            P = v['points'][v['inliers_mask']]
-            mean_vec = P.mean(axis=0) - center_xy
-            if (mean_vec @ line.t) < 0:
-                line.t = -line.t
-                line.n = -line.n
-                line.rho = -line.rho
-                line.angle_deg = (line.angle_deg + 180.0) % 360.0
+        for side, res in side_results.items():
+            # Straight lanes (suppressed: only keep base axes in output)
+            lanes_serialized = []
+            base_axis = res['base_axis']
+            base_ser = None
+            if base_axis is not None:
+                base_ser = {
+                    'angle_deg': float(base_axis.angle_deg),
+                    'n': [float(base_axis.n[0]), float(base_axis.n[1])],
+                    't': [float(base_axis.t[0]), float(base_axis.t[1])],
+                    'rho_m': float(base_axis.rho)
+                }
+            out['lanes_straight'][side] = {
+                'base_axis': base_ser,
+                'lanes': lanes_serialized,
+                'samples': int(len(res['points'])),
+            }
+            # Turn lanes
+            out['lanes_turn'][side] = turn_lanes[side]
 
-            # Stop line estimate
-            s_stop = stopline_along_axis(pts.loc[labels==lab], line, center_xy,
-                                         lateral_band=LATERAL_BAND,
-                                         use_quantile=STOP_QUANTILE)
-
+        # Also export four base approaches for backward compatibility
+        for side, res in side_results.items():
+            base_axis = res['base_axis']
+            if base_axis is None:
+                continue
             out['approaches'].append({
-                'cluster_label': int(lab),
-                'label_hint': lab_to_dir.get(lab, f'cluster_{lab}'),
+                'cluster_label': side,
+                'label_hint': side,
                 'axis': {
-                    'angle_deg': float(line.angle_deg),         # 0=E,90=N
-                    'n': [float(line.n[0]), float(line.n[1])],
-                    't': [float(line.t[0]), float(line.t[1])],
-                    'rho_m': float(line.rho)                   # n^T x = rho
+                    'angle_deg': float(base_axis.angle_deg),
+                    'n': [float(base_axis.n[0]), float(base_axis.n[1])],
+                    't': [float(base_axis.t[0]), float(base_axis.t[1])],
+                    'rho_m': float(base_axis.rho)
                 },
-                'stopline': {
-                    's_stop_m_from_center': float(s_stop) if not np.isnan(s_stop) else None,
-                    'method': f'quantile_{STOP_QUANTILE}' if not np.isnan(STOP_QUANTILE) else 'median'
-                },
-                'samples': int(len(P)),
-                'inliers': int(v['inliers_mask'].sum())
+                'stopline': stoplines[side],
+                'axis_polyline': None,
+                'samples': int(len(res['points'])),
+                'inliers': int(res['inliers_mask'].sum()) if res['inliers_mask'] is not None else int(len(res['points']))
             })
 
         # Determine intersection id from file name
         inter_id = road_id
 
-        # Write results JSON named by intersection id
-        out_json_path = f"{inter_id}.json"
+        # Write results JSON under BASE_DIR/data named by intersection id
+        out_json_path = os.path.join(DATA_DIR, f"{inter_id}_intersection.json")
         with open(out_json_path, 'w', encoding='utf-8') as f:
             json.dump(out, f, ensure_ascii=False, indent=2)
 
         # Optionally write GeoJSON named by intersection id
         if WRITE_GEOJSON:
+            out_geojson_path = os.path.join(DATA_DIR, f"{inter_id}_intersection.geojson")
             features = []
             # Center point
             features.append({
@@ -410,16 +686,13 @@ def main():
                 "properties": {"type": "center"},
                 "geometry": {"type": "Point", "coordinates": [center_lon, center_lat]}
             })
-            # Axes and stop lines (draw 120 m length for visualization)
+            # Visualize axes (only two global axes) and stoplines
             L_vis = 120.0
-            for app in out['approaches']:
-                t = np.array(app['axis']['t'])
-                n = np.array(app['axis']['n'])
-                rho = app['axis']['rho_m']
-                # Find a point p0 near the center lying on the axis:
-                # n^T p = rho and along the line direction ± L_vis/2.
-                # First, compute the point p0 on the line closest to the center:
-                # n^T p0 = rho, p0 = center + alpha * n; solve for alpha
+            # Draw NS axis
+            if 'line_NS' in locals() and line_NS is not None:
+                t = line_NS.t
+                n = line_NS.n
+                rho = line_NS.rho
                 alpha = rho - n @ center_xy
                 p0 = center_xy + alpha * n
                 p1 = p0 - t * (L_vis/2)
@@ -428,43 +701,75 @@ def main():
                 lon2, lat2 = xy_to_lonlat(p2[0], p2[1], lon0, lat0)
                 features.append({
                     "type": "Feature",
-                    "properties": {"type": "axis", "label": app['label_hint'], "angle_deg": app['axis']['angle_deg']},
+                    "properties": {"type": "axis", "name": "NS", "angle_deg": float(line_NS.angle_deg)},
                     "geometry": {"type": "LineString", "coordinates": [[lon1, lat1], [lon2, lat2]]}
                 })
-                # Stop line: perpendicular to the axis, passing through s_stop
-                s_stop = app['stopline']['s_stop_m_from_center']
+            # Draw EW axis
+            if 'line_EW' in locals() and line_EW is not None:
+                t = line_EW.t
+                n = line_EW.n
+                rho = line_EW.rho
+                alpha = rho - n @ center_xy
+                p0 = center_xy + alpha * n
+                p1 = p0 - t * (L_vis/2)
+                p2 = p0 + t * (L_vis/2)
+                lon1, lat1 = xy_to_lonlat(p1[0], p1[1], lon0, lat0)
+                lon2, lat2 = xy_to_lonlat(p2[0], p2[1], lon0, lat0)
+                features.append({
+                    "type": "Feature",
+                    "properties": {"type": "axis", "name": "EW", "angle_deg": float(line_EW.angle_deg)},
+                    "geometry": {"type": "LineString", "coordinates": [[lon1, lat1], [lon2, lat2]]}
+                })
+            # Stoplines per side (unchanged)
+            for side, res in side_results.items():
+                base_axis = res['base_axis']
+                if base_axis is None:
+                    continue
+                t = base_axis.t
+                n = base_axis.n
+                s_stop = stoplines[side]['s_stop_m_from_center']
                 if s_stop is not None:
                     p_stop_center = center_xy + t * s_stop
-                    # Render stop line with length 20 m
                     Ls = 20.0
                     q1 = p_stop_center - n * (Ls/2)
                     q2 = p_stop_center + n * (Ls/2)
-                    lon1, lat1 = xy_to_lonlat(q1[0], q1[1], lon0, lat0)
-                    lon2, lat2 = xy_to_lonlat(q2[0], q2[1], lon0, lat0)
+                    lon3, lat3 = xy_to_lonlat(q1[0], q1[1], lon0, lat0)
+                    lon4, lat4 = xy_to_lonlat(q2[0], q2[1], lon0, lat0)
                     features.append({
                         "type": "Feature",
-                        "properties": {"type": "stopline", "label": app['label_hint']},
-                        "geometry": {"type": "LineString", "coordinates": [[lon1, lat1], [lon2, lat2]]}
+                        "properties": {"type": "stopline", "side": side},
+                        "geometry": {"type": "LineString", "coordinates": [[lon3, lat3], [lon4, lat4]]}
                     })
-            out_geojson_path = f"{inter_id}.geojson"
+            # (Removed) turn_lanes visualizations; only draw specified curves below
+            # Specified curves forming the road network
+            for c in curves:
+                if c['polyline'] is not None:
+                    features.append({
+                        "type": "Feature",
+                        "properties": {"type": "curve", "name": c['name'], "labels": c['labels']},
+                        "geometry": {"type": "LineString", "coordinates": c['polyline']['coordinates']}
+                    })
             with open(out_geojson_path, 'w', encoding='utf-8') as f:
-                json.dump({"type":"FeatureCollection", "features": features}, f, ensure_ascii=False, indent=2)
+                json.dump({"type": "FeatureCollection", "features": features}, f, ensure_ascii=False, indent=2)
 
         # Console summary
         print(f"\n=== Intersection Inference Results ({inter_id}) ===")
         print(f"Center (local m): x={center_xy[0]:.2f}, y={center_xy[1]:.2f}")
         print(f"Center (lon,lat): ({center_lon:.6f}, {center_lat:.6f})")
-        for app in out['approaches']:
-            print(f"\n[{app['label_hint']}]  samples={app['samples']}  inliers={app['inliers']}")
-            print(f"  Axis angle = {app['axis']['angle_deg']:.2f} deg (0=E,90=N)")
-            print(f"  Axis eqn   : n^T x = rho,  n={app['axis']['n']}, rho={app['axis']['rho_m']:.2f} m")
-            sstop = app['stopline']['s_stop_m_from_center']
-            print(f"  Stop-line s(from center) = {None if sstop is None else f'{sstop:.2f} m'}  ({app['stopline']['method']})")
+        for side, res in side_results.items():
+            base_axis = res['base_axis']
+            if base_axis is None:
+                print(f"\n[{side}]  no straight base axis")
+                continue
+            print(f"\n[{side}]  straight_samples={len(res['points'])}  lanes={len(res['lanes'])}")
+            print(f"  Base axis angle = {base_axis.angle_deg:.2f} deg (0=E,90=N)")
+            print(f"  Base axis eqn   : n^T x = rho,  n={[float(base_axis.n[0]), float(base_axis.n[1])]}, rho={base_axis.rho:.2f} m")
+            sstop = stoplines[side]['s_stop_m_from_center']
+            print(f"  Stop-line s(from center) = {None if sstop is None else f'{sstop:.2f} m'}  ({stoplines[side]['method']})")
 
         if WRITE_GEOJSON:
             print(f"\nWrote {out_json_path} and {out_geojson_path}.")
         else:
             print(f"\nWrote {out_json_path}.")
 
-if __name__ == "__main__":
-    main()
+# Module is imported and executed via main.py

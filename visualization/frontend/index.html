@@ -8,8 +8,17 @@
     <!-- Cesium CSS -->
     <link href="Cesium-1.127/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
     
-    <!-- Custom CSS -->
-    <link href="css/style.css" rel="stylesheet">
+    <!-- Custom CSS (modularized) -->
+    <link href="css/base.css" rel="stylesheet">
+    <link href="css/layout.css" rel="stylesheet">
+    <link href="css/components.css" rel="stylesheet">
+    <link href="css/status.css" rel="stylesheet">
+    <link href="css/legend.css" rel="stylesheet">
+    <link href="css/point-info.css" rel="stylesheet">
+    <link href="css/cesium.css" rel="stylesheet">
+    <link href="css/timeline.css" rel="stylesheet">
+    <link href="css/timeline-modal.css" rel="stylesheet">
+    <link href="css/speed-modal.css" rel="stylesheet">
 </head>
 <body>
     <div id="cesiumContainer" class="fullSize"></div>
@@ -64,26 +73,26 @@
                 <input type="number" id="vehicleCount" value="3" min="1" max="50" style="width: 80px;">
                 
                 <div id="batchDirectionSection" class="filter-option direction-filter-container" style="margin-top: 10px;">
-                    <label for="batchDirection">Direction Filter:</label>
-                    <select id="batchDirection" style="width: 120px;">
-                        <option value="" selected>All Directions</option>
-                        <option value="A1">A1 (N-S Straight)</option>
-                        <option value="A2">A2 (N-S Left Turn)</option>
-                        <option value="B1">B1 (E-W Straight)</option>
-                        <option value="B2">B2 (E-W Left Turn)</option>
-                        <option value="C">C (Right Turns & Other)</option>
-                    </select>
+                    <div style="margin-bottom: 6px;">Direction Filter:</div>
+                    <div id="batchDirection" class="direction-multi" style="display: flex; gap: 8px; flex-wrap: wrap;">
+                        <label><input type="checkbox" name="batchDirection" value="A1-1"> A1-1 (East Straight)</label>
+                        <label><input type="checkbox" name="batchDirection" value="A1-2"> A1-2 (West Straight)</label>
+                        <label><input type="checkbox" name="batchDirection" value="B1-1"> B1-1 (North Straight)</label>
+                        <label><input type="checkbox" name="batchDirection" value="B1-2"> B1-2 (South Straight)</label>
+                        <label><input type="checkbox" name="batchDirection" value="A2-1"> A2-1 (Left to East)</label>
+                        <label><input type="checkbox" name="batchDirection" value="A2-2"> A2-2 (Left to West)</label>
+                        <label><input type="checkbox" name="batchDirection" value="B2-1"> B2-1 (Left to North)</label>
+                        <label><input type="checkbox" name="batchDirection" value="B2-2"> B2-2 (Left to South)</label>
+                        <label><input type="checkbox" name="batchDirection" value="A3-1"> A3-1 (Right to East)</label>
+                        <label><input type="checkbox" name="batchDirection" value="A3-2"> A3-2 (Right to West)</label>
+                        <label><input type="checkbox" name="batchDirection" value="B3-1"> B3-1 (Right to North)</label>
+                        <label><input type="checkbox" name="batchDirection" value="B3-2"> B3-2 (Right to South)</label>
+                        <label><input type="checkbox" name="batchDirection" value="C"> C (Other/Uncertain)</label>
+                        <label><input type="checkbox" name="batchDirection" value="U"> U (U-turn)</label>
+                    </div>
                 </div>
 
-                <div id="batchMovementSection" class="filter-option movement-filter-container" style="margin-top: 10px; display: none;">
-                    <label for="batchMovement">Movement Filter:</label>
-                    <select id="batchMovement" style="width: 140px;">
-                        <option value="" selected>All Movements</option>
-                        <option value="straight">Straight</option>
-                        <option value="turn">Turn</option>
-                        <option value="uturn">U-turn</option>
-                    </select>
-                </div>
+                
             </div>
             
             <div class="panel-section" id="timeRangeVehicleSection" style="display: none;">
@@ -94,26 +103,26 @@
                 <button id="loadVehicleTimeRangeBtn" class="btn btn-small">Load Time Range</button>
                 
                 <div id="timeRangeDirectionSection" class="filter-option direction-filter-container" style="margin-top: 10px;">
-                    <label for="timeRangeDirection">Direction Filter:</label>
-                    <select id="timeRangeDirection" style="width: 120px;">
-                        <option value="" selected>All Directions</option>
-                        <option value="A1">A1 (N-S Straight)</option>
-                        <option value="A2">A2 (N-S Left Turn)</option>
-                        <option value="B1">B1 (E-W Straight)</option>
-                        <option value="B2">B2 (E-W Left Turn)</option>
-                        <option value="C">C (Right Turns & Other)</option>
-                    </select>
+                    <div style="margin-bottom: 6px;">Direction Filter:</div>
+                    <div id="timeRangeDirection" class="direction-multi" style="display: flex; gap: 8px; flex-wrap: wrap;">
+                        <label><input type="checkbox" name="timeRangeDirection" value="A1-1"> A1-1 (East Straight)</label>
+                        <label><input type="checkbox" name="timeRangeDirection" value="A1-2"> A1-2 (West Straight)</label>
+                        <label><input type="checkbox" name="timeRangeDirection" value="B1-1"> B1-1 (North Straight)</label>
+                        <label><input type="checkbox" name="timeRangeDirection" value="B1-2"> B1-2 (South Straight)</label>
+                        <label><input type="checkbox" name="timeRangeDirection" value="A2-1"> A2-1 (Left to East)</label>
+                        <label><input type="checkbox" name="timeRangeDirection" value="A2-2"> A2-2 (Left to West)</label>
+                        <label><input type="checkbox" name="timeRangeDirection" value="B2-1"> B2-1 (Left to North)</label>
+                        <label><input type="checkbox" name="timeRangeDirection" value="B2-2"> B2-2 (Left to South)</label>
+                        <label><input type="checkbox" name="timeRangeDirection" value="A3-1"> A3-1 (Right to East)</label>
+                        <label><input type="checkbox" name="timeRangeDirection" value="A3-2"> A3-2 (Right to West)</label>
+                        <label><input type="checkbox" name="timeRangeDirection" value="B3-1"> B3-1 (Right to North)</label>
+                        <label><input type="checkbox" name="timeRangeDirection" value="B3-2"> B3-2 (Right to South)</label>
+                        <label><input type="checkbox" name="timeRangeDirection" value="C"> C (Other/Uncertain)</label>
+                        <label><input type="checkbox" name="timeRangeDirection" value="U"> U (U-turn)</label>
+                    </div>
                 </div>
 
-                <div id="timeRangeMovementSection" class="filter-option movement-filter-container" style="margin-top: 10px; display: none;">
-                    <label for="timeRangeMovement">Movement Filter:</label>
-                    <select id="timeRangeMovement" style="width: 140px;">
-                        <option value="" selected>All Movements</option>
-                        <option value="straight">Straight</option>
-                        <option value="turn">Turn</option>
-                        <option value="uturn">U-turn</option>
-                    </select>
-                </div>
+                
                 
                 <div id="vehicleTimeRangeInfo" class="time-range-info" style="margin-top: 5px; font-size: 12px; color: #666;">
                     Click "Load Time Range" to see available time range for selected date
@@ -133,26 +142,22 @@
                 <select id="dateFilter">
                     <option value="" selected>All Dates</option>
                 </select>
-                <button id="loadDatesBtn" class="btn btn-small">Load Dates</button>
+                
             </div>
 
+            
+            
             <div class="panel-section">
-                <label for="vehicleFilterMode">Filter By:</label>
-                <select id="vehicleFilterMode">
-                    <option value="direction" selected>Direction</option>
-                    <option value="movement">Movement</option>
+                <label for="dataSource">Data Source:</label>
+                <select id="dataSource">
+                    <option value="merged" selected>Merged (after)</option>
+                    <option value="split">Original (before)</option>
+                    <option value="refined">Refined (skeleton)</option>
                 </select>
             </div>
             
             <div class="panel-section">
-                <label for="dataLimit">Data Points Count:</label>
-                <select id="dataLimit">
-                    <option value="">All</option>
-                    <option value="100">100 points</option>
-                    <option value="500">500 points</option>
-                    <option value="1000">1000 points</option>
-                    <option value="5000">5000 points</option>
-                </select>
+                <label><input type="checkbox" id="pointsOnly"> Points only (no trajectory lines)</label>
             </div>
             
             <div class="panel-section">
@@ -172,6 +177,100 @@
                 <div id="status" class="status">
                     <span id="statusText">Ready</span>
                     <div id="loadingSpinner" class="loading-spinner" style="display: none;"></div>
+                </div>
+            </div>
+            </div>
+        </div>
+
+        <!-- Raw CSV Trajectory Panel -->
+        <div id="rawPanel" class="control-panel">
+            <div class="panel-header" data-panel="rawPanel">
+                <h3>Raw CSV Trajectory</h3>
+                <div class="collapse-indicator">−</div>
+            </div>
+            <div class="panel-content">
+
+            <div class="panel-section">
+                <label for="rawRoadId">Road Intersection:</label>
+                <select id="rawRoadId">
+                    <option value="A0003" selected>A0003</option>
+                    <option value="A0008">A0008</option>
+                </select>
+            </div>
+
+            <div class="panel-section">
+                <label for="rawDate">Date:</label>
+                <select id="rawDate">
+                    <option value="" selected>Select Date</option>
+                </select>
+            </div>
+
+            <div class="panel-section">
+                <label for="rawVehicleId">Vehicle ID:</label>
+                <input type="number" id="rawVehicleId" placeholder="Optional" min="1" style="width: 120px;">
+            </div>
+
+            <div class="panel-section">
+                <button id="loadRawBtn" class="btn btn-primary">Load Raw</button>
+                <button id="clearRawBtn" class="btn btn-secondary">Clear</button>
+            </div>
+
+            <div class="panel-section">
+                <button id="loadInferenceBtn" class="btn btn-primary">Load Intersection Overlays</button>
+                <button id="clearInferenceBtn" class="btn btn-secondary">Clear Overlays</button>
+            </div>
+
+            <div class="panel-section">
+                <div class="status" id="inferenceStatus" style="display: none;">
+                    <span id="inferenceStatusText"></span>
+                </div>
+            </div>
+
+            <div class="panel-section">
+                <div id="rawStatus" class="status" style="display: none;">
+                    <span id="rawStatusText"></span>
+                </div>
+            </div>
+            </div>
+        </div>
+
+        <!-- Trajectories Preprocess Panel -->
+        <div id="excludedPanel" class="control-panel">
+            <div class="panel-header" data-panel="excludedPanel">
+                <h3>Trajectories Preprocess</h3>
+                <div class="collapse-indicator">−</div>
+            </div>
+            <div class="panel-content">
+
+            <div class="panel-section">
+                <label for="excludedRoadId">Road Intersection:</label>
+                <select id="excludedRoadId">
+                    <option value="A0003" selected>A0003</option>
+                    <option value="A0008">A0008</option>
+                </select>
+            </div>
+
+            <div class="panel-section">
+                <label for="excludedDate">Date:</label>
+                <select id="excludedDate">
+                    <option value="" selected>Select Date</option>
+                </select>
+                
+            </div>
+
+            <div class="panel-section">
+                <label for="excludedVehicleId">Vehicle ID:</label>
+                <input type="number" id="excludedVehicleId" placeholder="Optional" min="1" style="width: 120px;">
+            </div>
+
+            <div class="panel-section">
+                <button id="loadExcludedBtn" class="btn btn-primary">Load Excluded</button>
+                <button id="clearExcludedBtn" class="btn btn-secondary">Clear</button>
+            </div>
+
+            <div class="panel-section">
+                <div id="excludedStatus" class="status" style="display: none;">
+                    <span id="excludedStatusText"></span>
                 </div>
             </div>
             </div>
@@ -202,13 +301,15 @@
             <div class="panel-section">
                 <button id="queryTrafficLightBtn" class="btn btn-primary">Query Traffic Light Status</button>
             </div>
+
+            
             
             <div class="panel-section">
                 <div id="trafficLightStatus" class="traffic-light-status">
                     <div class="status-message">No data queried yet. Click "Query Traffic Light Status" to view results.</div>
                 </div>
             </div>
-            
+
             <div class="panel-section">
                 <div id="trafficStatus" class="status" style="display: none;">
                     <span id="trafficStatusText"></span>
@@ -216,8 +317,6 @@
             </div>
             </div>
         </div>
-
-        
 
         <!-- Speed Analysis Panel -->
         <div id="speedPanel" class="control-panel">
@@ -241,13 +340,22 @@
                 
                 <div style="margin-top: 10px;">
                     <label for="singleSpeedDirection">Direction Filter:</label>
-                    <select id="singleSpeedDirection" style="width: 120px;">
+                    <select id="singleSpeedDirection" style="width: 180px;">
                         <option value="" selected>All Directions</option>
-                        <option value="A1">A1 (N-S Straight)</option>
-                        <option value="A2">A2 (N-S Left Turn)</option>
-                        <option value="B1">B1 (E-W Straight)</option>
-                        <option value="B2">B2 (E-W Left Turn)</option>
-                        <option value="C">C (Right Turns & Other)</option>
+                        <option value="A1-1">A1-1 (East Straight)</option>
+                        <option value="A1-2">A1-2 (West Straight)</option>
+                        <option value="B1-1">B1-1 (North Straight)</option>
+                        <option value="B1-2">B1-2 (South Straight)</option>
+                        <option value="A2-1">A2-1 (Left to East)</option>
+                        <option value="A2-2">A2-2 (Left to West)</option>
+                        <option value="B2-1">B2-1 (Left to North)</option>
+                        <option value="B2-2">B2-2 (Left to South)</option>
+                        <option value="A3-1">A3-1 (Right to East)</option>
+                        <option value="A3-2">A3-2 (Right to West)</option>
+                        <option value="B3-1">B3-1 (Right to North)</option>
+                        <option value="B3-2">B3-2 (Right to South)</option>
+                        <option value="C">C (Other/Uncertain)</option>
+                        <option value="U">U (U-turn)</option>
                     </select>
                 </div>
             </div>
@@ -261,13 +369,22 @@
                 
                 <div style="margin-top: 10px;">
                     <label for="timeRangeSpeedDirection">Direction Filter:</label>
-                    <select id="timeRangeSpeedDirection" style="width: 120px;">
+                    <select id="timeRangeSpeedDirection" style="width: 180px;">
                         <option value="" selected>All Directions</option>
-                        <option value="A1">A1 (N-S Straight)</option>
-                        <option value="A2">A2 (N-S Left Turn)</option>
-                        <option value="B1">B1 (E-W Straight)</option>
-                        <option value="B2">B2 (E-W Left Turn)</option>
-                        <option value="C">C (Right Turns & Other)</option>
+                        <option value="A1-1">A1-1 (East Straight)</option>
+                        <option value="A1-2">A1-2 (West Straight)</option>
+                        <option value="B1-1">B1-1 (North Straight)</option>
+                        <option value="B1-2">B1-2 (South Straight)</option>
+                        <option value="A2-1">A2-1 (Left to East)</option>
+                        <option value="A2-2">A2-2 (Left to West)</option>
+                        <option value="B2-1">B2-1 (Left to North)</option>
+                        <option value="B2-2">B2-2 (Left to South)</option>
+                        <option value="A3-1">A3-1 (Right to East)</option>
+                        <option value="A3-2">A3-2 (Right to West)</option>
+                        <option value="B3-1">B3-1 (Right to North)</option>
+                        <option value="B3-2">B3-2 (Right to South)</option>
+                        <option value="C">C (Other/Uncertain)</option>
+                        <option value="U">U (U-turn)</option>
                     </select>
                 </div>
                 
@@ -289,7 +406,7 @@
                 <select id="speedDate">
                     <option value="" selected>Select Date</option>
                 </select>
-                <button id="loadSpeedDatesBtn" class="btn btn-small">Load Dates</button>
+                
             </div>
             
             <div class="panel-section">
@@ -324,61 +441,11 @@
             </div>
         </div>
 
-        <!-- Smoothing Comparison Panel -->
-        <div id="smoothingPanel" class="control-panel">
-            <div class="panel-header" data-panel="smoothingPanel">
-                <h3>Raw vs Smoothed Trajectory</h3>
-                <div class="collapse-indicator">−</div>
-            </div>
-            <div class="panel-content">
-                <div class="panel-section">
-                    <label for="smoothingRoadId">Road Intersection:</label>
-                    <select id="smoothingRoadId">
-                        <option value="A0003" selected>A0003</option>
-                        <option value="A0008">A0008</option>
-                    </select>
-                </div>
-
-                <div class="panel-section">
-                    <label for="smoothingDate">Date:</label>
-                    <input type="date" id="smoothingDate">
-                </div>
-
-                <div class="panel-section">
-                    <label for="smoothingVehicleId">Vehicle ID:</label>
-                    <input type="number" id="smoothingVehicleId" min="1" style="width: 120px;">
-                </div>
-
-                <div class="panel-section">
-                    <label for="smoothingSegId">Seg ID (optional):</label>
-                    <input type="number" id="smoothingSegId" min="0" style="width: 120px;">
-                </div>
-
-                <div class="panel-section">
-                    <button id="loadSmoothingBtn" class="btn btn-primary">Load Trajectories</button>
-                    <button id="clearSmoothingBtn" class="btn btn-secondary">Clear</button>
-                </div>
-
-                <div class="panel-section">
-                    <div id="smoothingStatus" class="status" style="display: none;">
-                        <span id="smoothingStatusText"></span>
-                    </div>
-                </div>
-
-                <div class="panel-section">
-                    <div id="smoothingInfo" class="data-info">
-                        <div id="smoothingRawCount">Raw Points: --</div>
-                        <div id="smoothingSmoothedCount">Smoothed Points: --</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
         
     </div>
 
     <!-- Traffic Light Timeline Modal -->
-    <div id="timelineModal" class="timeline-modal" style="display: none !important; visibility: hidden;">
+    <div id="timelineModal" class="timeline-modal">
         <div class="timeline-modal-content">
             <div class="timeline-modal-header">
                 <h3 id="timelineModalTitle">Traffic Light Timeline</h3>
@@ -391,7 +458,7 @@
     </div>
 
     <!-- Speed Analysis Modal -->
-    <div id="speedModal" class="speed-modal" style="display: none !important; visibility: hidden;">
+    <div id="speedModal" class="speed-modal">
         <div class="speed-modal-content">
             <div class="speed-modal-header">
                 <h3 id="speedModalTitle">Speed Analysis Chart</h3>
@@ -407,6 +474,6 @@
     <script src="Cesium-1.127/Build/Cesium/Cesium.js"></script>
     
     <!-- Custom JS -->
-    <script src="js/app.js"></script>
+    <script type="module" src="js/app.js"></script>
 </body>
 </html>

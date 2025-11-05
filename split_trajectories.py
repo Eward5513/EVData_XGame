@@ -15,6 +15,7 @@ import pandas as pd
 import numpy as np
 import math
 import os
+from config import BASE_DIR, CENTERS
 
 # Intersection centers are passed per road; no global default center
 
@@ -29,8 +30,31 @@ MANUAL_OVERRIDES: dict[tuple[str, int, str], dict] = {
     ('A0008', 132, '2024-06-17'): {'segments': [(1, 2)]},
     ('A0008', 622, '2024-06-20'): {'segments': [(3, 4)]},
     ('A0008', 348, '2024-06-19'): {'segments': [(1, 3)]},
+    ('A0003', 287, '2024-06-19'): {'segments': [(3, 20),(55,66),(67,None)]},
     ('A0003', 1157, '2024-06-21'): {'segments': [(1, 6),(7,None)]},
     ('A0008', 1665, '2024-06-17'): {'segments': [(1, 10),(11,14),(15,None)]},
+    ('A0008', 18, '2024-06-19'): {'segments': [(1, 12),(13,23),(24,None)]},
+    ('A0008', 1999, '2024-06-18'): {'segments': [(1, 6),(7,None)]},
+    ('A0008', 1303, '2024-06-21'): {'segments': [(1, 14),(15,None)]},
+    ('A0008', 1775, '2024-06-19'): {'segments': [(1, 3),(3,None)]},
+    ('A0003', 1581, '2024-06-17'): {'segments': [(1, 2),(2,None)]},
+    ('A0003', 2297, '2024-06-19'): {'segments': [(1, 2),(2,None)]},
+    ('A0003', 217, '2024-06-19'): {'segments': [(1, 10),(79,None)]},
+    ('A0003', 1614, '2024-06-17'): {'segments': [(20,None)]},
+    ('A0003', 812, '2024-06-18'): {'segments': [(11,None)]},
+    ('A0003', 1117, '2024-06-21'): {'segments': [(68,None)]},
+}
+
+# Manual exclusions: remove entire segments after splitting/overrides.
+# Key: (road_id, vehicle_id, date, seg_id)
+# Example: {('A0008', 1775, '2024-06-19', -1)}  # seg_id=-1 means remove ALL segments for that (road_id, vehicle_id, date)
+MANUAL_EXCLUSIONS: set[tuple[str, int, str, int]] = {
+    ('A0003', 27, '2024-06-19', -1),
+    ('A0003', 663, '2024-06-20', -1),
+    ('A0003', 276, '2024-06-19', -1),
+    ('A0003', 1443, '2024-06-17', 1),
+    ('A0003', 496, '2024-06-20', 1),
+
 }
 
 # Center-based splitting hysteresis thresholds (meters)
@@ -42,106 +66,112 @@ FAR_RADIUS_M = 150.0
 DR_NOISE_EPS_M = 0.5  # minimal radial change to consider trend change (meters)
 
 
-def apply_manual_forced_splits(
+# Exclusion radius for preprocessing (meters)
+EXCLUDE_OUTSIDE_RADIUS_M = 200.0
+# If a segment has no points within the exclusion radius, keep it when the
+# angular change of start vs end around the center exceeds this threshold (deg)
+ANGULAR_CHANGE_DEG_THRESHOLD = 60.0
+
+
+def exclude_segments_outside_radius(
     df: pd.DataFrame,
-    rules_csv_path: str,
-) -> pd.DataFrame:
+    center_lat: float,
+    center_lon: float,
+    radius_m: float = EXCLUDE_OUTSIDE_RADIUS_M,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """
-    Apply manual forced splits after automatic segmentation.
-    
-    Rules CSV schema (columns):
-    - road_id: str
-    - vehicle_id: int
-    - date: YYYY-MM-DD
-    - seg_id: int  (the existing segment to split)
-    - split_at_time: HH:MM:SS  (force a split at the first row with time_stamp >= this)
-      OR
-      split_at_collectiontime: int (ms since epoch; if provided, use the first row with collectiontime >= this)
-    Multiple rules can exist per (vehicle_id,date,seg_id).
-    The function re-assigns seg_id within the affected (vehicle_id,date) group by incrementing seg_id
-    for rows at and after the split index. If multiple rules affect the same group, they are applied in
-    ascending order of the split index.
+    Remove segments (vehicle_id, date, seg_id) whose ALL points lie beyond radius_m from the center,
+    EXCEPT keep segments whose start vs end polar angle around the center changes by more than
+    ANGULAR_CHANGE_DEG_THRESHOLD degrees.
+
+    Returns (kept_df, excluded_df, stats_dict).
     """
-    if not os.path.exists(rules_csv_path):
-        return df
+    if df.empty:
+        return df, df.iloc[0:0], {"excluded_segments": 0, "excluded_rows": 0}
 
-    rules = pd.read_csv(rules_csv_path)
-    # Normalize columns
-    for col in ['road_id', 'date']:
-        if col in rules.columns:
-            rules[col] = rules[col].astype(str)
+    out = df.copy()
+    # Ensure seg_id exists and is integer
+    if 'seg_id' not in out.columns:
+        raise ValueError("exclude_segments_outside_radius requires seg_id column")
 
-    # Group rules per (road_id, vehicle_id, date)
-    key_cols = ['road_id', 'vehicle_id', 'date']
-    missing = [k for k in key_cols if k not in rules.columns]
-    if missing:
-        print(f"manual_splits.csv missing columns: {missing}; skip manual splits")
-        return df
+    # Compute per-row distance to center (meters)
+    lats = out['latitude'].to_numpy()
+    lons = out['longitude'].to_numpy()
+    dy = (lats - center_lat) * 111000.0
+    dx = (lons - center_lon) * 111000.0 * np.cos(np.radians(lats))
+    dist = np.sqrt(dx * dx + dy * dy)
+    near = dist <= float(radius_m)
 
-    df = df.copy()
-    # Ensure needed columns exist in df
-    required_df_cols = ['road_id', 'vehicle_id', 'date', 'seg_id', 'time_stamp', 'collectiontime']
-    for c in required_df_cols:
-        if c not in df.columns:
-            raise ValueError(f"Dataframe missing required column: {c}")
+    # For each (vehicle_id, date, seg_id), keep if ANY near==True; else evaluate angular change rule
+    grp_keys = ['vehicle_id', 'date', 'seg_id']
+    # Make sure seg_id is int for stable grouping
+    out['seg_id'] = out['seg_id'].astype('int64')
+    any_near = (
+        pd.Series(near, index=out.index)
+        .groupby([out['vehicle_id'], out['date'], out['seg_id']])
+        .transform('any')
+    )
 
-    # Process per (road_id, vehicle_id, date)
-    for (road_id, vehicle_id, date), df_idx in df.groupby(key_cols).groups.items():
-        sub = df.loc[df_idx].copy()
-        # Gather rules for this group
-        rsub = rules[(rules['road_id'] == str(road_id)) & (rules['vehicle_id'] == int(vehicle_id)) & (rules['date'] == str(date))]
-        if rsub.empty:
+    # Start with keep mask based on near; we'll add angle-based keep for groups with no near points
+    keep_mask = any_near.copy()
+
+    # Helper: compute normalized polar angle (degrees) of vector center->(lat,lon)
+    def compute_angle_deg(lat_val: float, lon_val: float) -> float:
+        dy_m = (float(lat_val) - float(center_lat)) * 111000.0
+        dx_m = (float(lon_val) - float(center_lon)) * 111000.0 * math.cos(math.radians(float(lat_val)))
+        ang_deg = math.degrees(math.atan2(dy_m, dx_m))
+        # Normalize to [0,360)
+        if ang_deg < 0:
+            ang_deg += 360.0
+        return ang_deg
+
+    # Helper: minimal absolute angular difference (degrees) accounting for wrap-around
+    def ang_diff_deg(a: float, b: float) -> float:
+        d = abs(((a - b + 180.0) % 360.0) - 180.0)
+        return d
+
+    # Evaluate angle rule per group only for those with no near points
+    for (vid, date, sid), idx in out.groupby(grp_keys).groups.items():
+        # Check group near status using label-based indexing
+        any_near_group = bool(any_near.loc[idx].any()) if len(idx) > 0 else False
+        if any_near_group:
+            continue  # already kept
+
+        sub = out.loc[idx]
+        if sub.empty:
             continue
+        # Order chronologically
+        if 'collectiontime' in sub.columns:
+            sub_ord = sub.sort_values('collectiontime')
+        else:
+            sub_ord = sub
+        # Get start and end
+        start_row = sub_ord.iloc[0]
+        end_row = sub_ord.iloc[-1]
+        try:
+            a0 = compute_angle_deg(float(start_row['latitude']), float(start_row['longitude']))
+            a1 = compute_angle_deg(float(end_row['latitude']), float(end_row['longitude']))
+            delta = ang_diff_deg(a1, a0)
+            if delta > float(ANGULAR_CHANGE_DEG_THRESHOLD):
+                # Keep entire group by angle rule
+                keep_mask.loc[idx] = True
+        except Exception:
+            # If angle computation fails, do not change keep_mask (remain excluded)
+            pass
 
-        # Prepare split points per seg_id
-        split_points_by_seg: dict[int, list[int]] = {}
-        for _, r in rsub.iterrows():
-            if 'seg_id' not in r or pd.isna(r['seg_id']):
-                continue
-            seg = int(r['seg_id'])
+    kept = out[keep_mask].copy()
+    excluded = out[~keep_mask].copy()
+    excluded_rows = int(len(excluded))
+    excluded_segments = 0
+    if excluded_rows > 0:
+        excluded['excluded_reason'] = 'outside_200m_all_points'
+        # Count unique segments excluded
+        excluded_segments = excluded.drop_duplicates(subset=grp_keys).shape[0]
 
-            # Find split index within this group's rows for this seg
-            seg_mask = (sub['seg_id'] == seg)
-            seg_rows = sub[seg_mask]
-            if seg_rows.empty:
-                continue
-            # Determine split index by time_stamp or collectiontime
-            split_idx_local: int | None = None
-            if 'split_at_collectiontime' in r and pd.notna(r['split_at_collectiontime']):
-                try:
-                    t_ms = int(r['split_at_collectiontime'])
-                    match = seg_rows[seg_rows['collectiontime'] >= t_ms]
-                    if not match.empty:
-                        split_idx_local = int(match.index[0])
-                except Exception:
-                    pass
-            if split_idx_local is None and 'split_at_time' in r and pd.notna(r['split_at_time']):
-                try:
-                    t_str = str(r['split_at_time']).strip()
-                    match = seg_rows[seg_rows['time_stamp'] >= t_str]
-                    if not match.empty:
-                        split_idx_local = int(match.index[0])
-                except Exception:
-                    pass
-            if split_idx_local is None:
-                continue
-            split_points_by_seg.setdefault(seg, []).append(split_idx_local)
+    stats = {"excluded_segments": excluded_segments, "excluded_rows": excluded_rows}
+    return kept, excluded, stats
 
-        if not split_points_by_seg:
-            continue
 
-        # For deterministic behavior, apply splits per seg_id in ascending order, and within seg by ascending index
-        for seg in sorted(split_points_by_seg.keys()):
-            indices = sorted(set(split_points_by_seg[seg]))
-            for split_abs_idx in indices:
-                # For all rows in (this group) with index >= split_abs_idx and seg_id >= seg,
-                # increment seg_id by 1 to create a new segment starting at split
-                mask_after = (df.index.isin(df_idx)) & (df.index >= split_abs_idx)
-                # Only bump seg_id for the targeted seg and any later segs within the same (vid,date) group
-                # so that later splits remain consistent
-                df.loc[mask_after & (df['seg_id'] >= seg), 'seg_id'] = df.loc[mask_after & (df['seg_id'] >= seg), 'seg_id'] + 1
-
-    return df
 
 
 def apply_manual_overrides_inline(df: pd.DataFrame) -> pd.DataFrame:
@@ -160,6 +190,13 @@ def apply_manual_overrides_inline(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     out = df.copy()
+    # Normalize key column types to ensure mask matches
+    if 'road_id' in out.columns:
+        out['road_id'] = out['road_id'].astype(str)
+    if 'vehicle_id' in out.columns:
+        out['vehicle_id'] = out['vehicle_id'].astype('int64')
+    if 'date' in out.columns:
+        out['date'] = out['date'].astype(str)
     # Ensure required columns
     required_cols = ['road_id', 'vehicle_id', 'date', 'collectiontime', 'seg_id']
     for c in required_cols:
@@ -211,26 +248,57 @@ def apply_manual_overrides_inline(df: pd.DataFrame) -> pd.DataFrame:
         if not segments:
             continue
 
-        # Assign seg_id per segment starting from 0; drop uncovered points
-        seg_id_local = np.full(n, -1, dtype=np.int64)
+        # Build replacement rows allowing overlapping positions to be duplicated across segments
+        replacement_rows: list[pd.Series] = []
         cur_seg = 0
         for (a, b) in segments:
             for pos in range(a, b + 1):
                 if 0 <= pos < n:
-                    seg_id_local[pos] = cur_seg
+                    src_idx = ordered_idx[pos]
+                    row = out.loc[src_idx].copy()
+                    row['seg_id'] = cur_seg
+                    replacement_rows.append(row)
             cur_seg += 1
 
-        keep_positions = [pos for pos in range(n) if seg_id_local[pos] >= 0]
-        drop_positions = [pos for pos in range(n) if seg_id_local[pos] < 0]
+        # Replace the group's rows with the reconstructed rows (drop uncovered points and allow duplicates)
+        out = out.drop(index=ordered_idx)
+        if replacement_rows:
+            out = pd.concat([out, pd.DataFrame(replacement_rows)], ignore_index=True)
 
-        if drop_positions:
-            drop_indices = [ordered_idx[pos] for pos in drop_positions]
-            out = out.drop(index=drop_indices)
+    return out
 
-        if keep_positions:
-            keep_indices = [ordered_idx[pos] for pos in keep_positions]
-            out.loc[keep_indices, 'seg_id'] = np.take(seg_id_local, keep_positions)
+def apply_manual_exclusions_inline(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Remove rows for segments listed in MANUAL_EXCLUSIONS.
+    Keys: (road_id, vehicle_id, date, seg_id).
+    Occurs after automatic splitting and manual overrides, before radius exclusion.
+    """
+    if not MANUAL_EXCLUSIONS:
+        return df
+    out = df.copy()
+    required_cols = ['road_id', 'vehicle_id', 'date', 'seg_id']
+    for c in required_cols:
+        if c not in out.columns:
+            raise ValueError(f"Dataframe missing required column for manual exclusions: {c}")
+    out['road_id'] = out['road_id'].astype(str)
+    out['vehicle_id'] = out['vehicle_id'].astype('int64')
+    out['date'] = out['date'].astype(str)
+    out['seg_id'] = out['seg_id'].astype('int64')
 
+    drop_idx_all: list[int] = []
+    for (road_id, vehicle_id, date, seg_id) in MANUAL_EXCLUSIONS:
+        base_mask = (
+            (out['road_id'] == str(road_id)) &
+            (out['vehicle_id'] == int(vehicle_id)) &
+            (out['date'] == str(date))
+        )
+        if int(seg_id) == -1:
+            mask = base_mask  # remove all segments for this (road_id, vehicle_id, date)
+        else:
+            mask = base_mask & (out['seg_id'] == int(seg_id))
+        drop_idx_all.extend(out[mask].index.tolist())
+    if drop_idx_all:
+        out = out.drop(index=drop_idx_all)
     return out
 def adaptive_split_segment_indices(
     df: pd.DataFrame,
@@ -367,7 +435,6 @@ def process_file(
     center_lat: float,
     center_lon: float,
     max_gap_seconds: float = 180.0,
-    manual_rules_path: str | None = None,
 ) -> None:
     print(f"Reading {input_path} ...")
     df = pd.read_csv(input_path)
@@ -411,15 +478,35 @@ def process_file(
         vid_pos = 0
     df.insert(vid_pos + 1, 'seg_id', seg_ids_concat.astype('int64').to_numpy())
 
-    # Apply manual forced splits if rules are provided
-    if manual_rules_path and os.path.exists(manual_rules_path):
-        df = apply_manual_forced_splits(df, manual_rules_path)
     # Apply inline hardcoded overrides
     df = apply_manual_overrides_inline(df)
 
+    # Apply manual exclusions inline after splitting/overrides
+    df = apply_manual_exclusions_inline(df)
+
+    # Exclude segments whose all points are outside the center radius
+    kept_df, excluded_df, ex_stats = exclude_segments_outside_radius(
+        df, center_lat=center_lat, center_lon=center_lon, radius_m=EXCLUDE_OUTSIDE_RADIUS_M
+    )
+
+    # Write kept (split) file
     print(f"Writing {output_path} ...")
-    df.to_csv(output_path, index=False)
-    print(f"Wrote {len(df)} rows to {output_path}")
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    kept_df.to_csv(output_path, index=False)
+    print(f"Wrote {len(kept_df)} rows to {output_path}")
+
+    # Write excluded file (parallel to split file name)
+    excluded_path = output_path.replace('_split.csv', '_excluded.csv')
+    if len(excluded_df) > 0:
+        print(f"Writing excluded rows to {excluded_path} ...")
+        excluded_df.to_csv(excluded_path, index=False)
+        print(
+            f"Excluded segments={ex_stats['excluded_segments']}, rows={ex_stats['excluded_rows']} (radius={EXCLUDE_OUTSIDE_RADIUS_M}m)"
+        )
+    else:
+        # If no excluded rows, and an older excluded file exists, we do not touch it
+        print("No segments excluded by radius rule.")
     # Report center-based splitting metrics
     print(
         f"Center-based splitting: affected trajectories = {affected_trajectories}, "
@@ -428,29 +515,26 @@ def process_file(
 
 
 def main():
-    base = '/home/tzhang174/EVData_XGame'
-    # Per-road intersection centers (lat, lon) consistent with analyze_direction.py
-    A0003_CENTER = (32.345137, 123.152539)
-    A0008_CENTER = (32.327137, 123.181261)
-    manual_rules = os.path.join(base, 'manual_splits.csv') if os.path.exists(os.path.join(base, 'manual_splits.csv')) else None
+    data_dir = os.path.join(BASE_DIR, 'data')
+    os.makedirs(data_dir, exist_ok=True)
+    # Per-road intersection centers (lat, lon)
+    A0003_CENTER = CENTERS['A0003']
+    A0008_CENTER = CENTERS['A0008']
 
     process_file(
-        f'{base}/A0003.csv',
-        f'{base}/A0003_split.csv',
+        f'{data_dir}/A0003.csv',
+        f'{data_dir}/A0003_split.csv',
         center_lat=A0003_CENTER[0],
         center_lon=A0003_CENTER[1],
-        manual_rules_path=manual_rules,
     )
     process_file(
-        f'{base}/A0008.csv',
-        f'{base}/A0008_split.csv',
+        f'{data_dir}/A0008.csv',
+        f'{data_dir}/A0008_split.csv',
         center_lat=A0008_CENTER[0],
         center_lon=A0008_CENTER[1],
-        manual_rules_path=manual_rules,
     )
 
 
-if __name__ == '__main__':
-    main()
+## Module is imported by main.py; no standalone execution
 
 

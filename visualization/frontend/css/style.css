@@ -126,15 +126,7 @@ html, body {
     background-color: rgba(231, 76, 60, 0.1);
 }
 
-#smoothingPanel .panel-header h3 {
-    border-bottom-color: #8e44ad;
-    color: #8e44ad;
-}
-
-#smoothingPanel .collapse-indicator {
-    color: #8e44ad;
-    background-color: rgba(142, 68, 173, 0.1);
-}
+ 
 
 /* 表单元素样式 */
 label {
@@ -295,30 +287,7 @@ select:focus {
 }
 
 /* 响应式设计 */
-@media (max-width: 768px) {
-    .toolbar {
-        width: 260px;
-        padding: 12px;
-    }
-    
-    .toolbar h3 {
-        font-size: 14px;
-    }
-    
-    .btn {
-        padding: 8px 12px;
-        font-size: 13px;
-        min-width: 70px;
-    }
-}
-
-@media (max-width: 480px) {
-    .toolbar {
-        width: calc(100vw - 20px);
-        left: 10px;
-        right: 10px;
-    }
-}
+/* Removed unused .toolbar styles */
 
 /* Cesium组件自定义样式 */
 .cesium-viewer-toolbar {
@@ -431,21 +400,7 @@ select:focus {
 }
 
 /* Traffic Light Status Query Styles */
-
-.traffic-light-results {
-    background-color: #f8f9fa;
-    border: 1px solid #dee2e6;
-    border-radius: 4px;
-    padding: 15px;
-    margin-top: 10px;
-}
-
-.traffic-light-results h4 {
-    color: #2c3e50;
-    margin-bottom: 10px;
-    font-size: 14px;
-    font-weight: 600;
-}
+/* Removed unused .traffic-light-results styles */
 
 .phase-item {
     background-color: white;

@@ -1,0 +1,230 @@
+/* Timeline modal overlay */
+.timeline-modal {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    background-color: rgba(0, 0, 0, 0.7) !important;
+    z-index: 10000 !important;
+    align-items: center !important;
+    justify-content: center !important;
+    backdrop-filter: blur(5px);
+    margin: 0 !important;
+    padding: 0 !important;
+}
+
+.timeline-modal[style*="display: none"] {
+    display: none !important;
+    visibility: hidden !important;
+}
+
+.timeline-modal[style*="display: block"] {
+    display: flex !important;
+    visibility: visible !important;
+}
+
+/* 默认隐藏状态 */
+.timeline-modal:not([style*="display: block"]) {
+    display: none !important;
+    visibility: hidden !important;
+}
+
+.timeline-modal-content {
+    background: white !important;
+    border-radius: 12px;
+    width: 95% !important;
+    max-width: 1400px !important;
+    max-height: 90% !important;
+    overflow: hidden;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+    animation: modalSlideIn 0.3s ease-out;
+    margin: auto !important;
+    position: relative !important;
+    transform: none !important;
+}
+
+.timeline-modal-header {
+    background: linear-gradient(135deg, #e74c3c, #c0392b);
+    color: white;
+    padding: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #ddd;
+}
+
+.timeline-modal-header h3 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+}
+
+.close-btn {
+    background: none;
+    border: none;
+    color: white;
+    font-size: 28px;
+    cursor: pointer;
+    padding: 0;
+    width: 35px;
+    height: 35px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background-color 0.3s ease;
+}
+
+.close-btn:hover {
+    background-color: rgba(255, 255, 255, 0.2);
+    transform: scale(1.1);
+}
+
+.timeline-modal-body {
+    padding: 20px;
+    max-height: 70vh;
+    overflow-y: auto;
+}
+
+/* Enhanced Timeline Styles for Modal */
+.timeline-modal .timeline-container {
+    background-color: transparent;
+    border: none;
+    padding: 0;
+    margin-bottom: 20px;
+    width: 100%;
+}
+
+.timeline-modal .timeline-chart {
+    min-height: 300px;
+}
+
+.timeline-modal .timeline-row {
+    margin-bottom: 40px;
+}
+
+.timeline-modal .phase-label {
+    width: 120px;
+    font-size: 14px;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.timeline-modal .timeline-bar-container {
+    height: 45px;
+    margin-left: 20px;
+    flex: 1;
+    min-width: 400px;
+}
+
+.timeline-modal .timeline-bar-info {
+    font-size: 13px;
+}
+
+.timeline-modal .time-markers {
+    top: 50px;
+}
+
+.timeline-modal .start-time,
+.timeline-modal .end-time {
+    font-size: 12px;
+    padding: 4px 8px;
+    background-color: rgba(255, 255, 255, 0.95);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.timeline-modal .cycle-summary {
+    background: linear-gradient(135deg, #e8f4fd, #d1ecf1);
+    border: 1px solid #bee5eb;
+    padding: 20px;
+    margin-bottom: 25px;
+    width: 100%;
+}
+
+.timeline-modal .cycle-summary h5 {
+    font-size: 16px;
+    margin-bottom: 12px;
+}
+
+.timeline-modal .cycle-summary p {
+    font-size: 14px;
+    margin: 6px 0;
+}
+
+.timeline-modal .phase-details-list {
+    background-color: #f8f9fa;
+    padding: 20px;
+    width: 100%;
+}
+
+.timeline-modal .phase-item {
+    padding: 15px;
+    margin-bottom: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+@keyframes modalSlideIn {
+    from {
+        opacity: 0;
+        transform: scale(0.9);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+/* Modal responsive design */
+@media (max-width: 1200px) {
+    .timeline-modal-content {
+        width: 98%;
+        max-width: none;
+    }
+    
+    .timeline-modal .timeline-bar-container {
+        min-width: 300px;
+    }
+}
+
+@media (max-width: 800px) {
+    .timeline-modal-content {
+        width: 98%;
+        margin: 10px;
+        max-height: 95%;
+    }
+    
+    .timeline-modal-header {
+        padding: 15px;
+    }
+    
+    .timeline-modal-header h3 {
+        font-size: 16px;
+    }
+    
+    .timeline-modal-body {
+        padding: 15px;
+    }
+    
+    .timeline-modal .phase-label {
+        width: 80px;
+        font-size: 12px;
+    }
+    
+    .timeline-modal .timeline-bar-container {
+        height: 35px;
+        min-width: 250px;
+    }
+    
+    .timeline-modal .timeline-chart {
+        min-height: 250px;
+    }
+}
+
+
+
+
+
+

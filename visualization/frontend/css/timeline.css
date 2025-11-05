@@ -1,0 +1,175 @@
+/* Timeline and traffic light phase list (panel) */
+.phase-item {
+    background-color: white;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 10px;
+    margin-bottom: 8px;
+    transition: all 0.3s ease;
+}
+
+.phase-item:hover {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.phase-header {
+    font-weight: 600;
+    color: #2c3e50;
+    margin-bottom: 5px;
+    display: flex;
+    align-items: center;
+}
+
+.phase-indicator {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-right: 8px;
+    background-color: #e74c3c;
+    border: 2px solid #c0392b;
+}
+
+.phase-details {
+    font-size: 12px;
+    color: #7f8c8d;
+    line-height: 1.4;
+}
+
+.time-info {
+    margin: 2px 0;
+}
+
+.duration-info {
+    font-weight: 500;
+    color: #e74c3c;
+}
+
+/* Timeline chart inside panel */
+.cycle-summary {
+    background-color: #e8f4fd;
+    border: 1px solid #bee5eb;
+    border-radius: 4px;
+    padding: 12px;
+    margin-bottom: 15px;
+}
+
+.cycle-summary h5 {
+    color: #2c3e50;
+    margin-bottom: 8px;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.cycle-summary p {
+    margin: 4px 0;
+    font-size: 12px;
+    color: #495057;
+}
+
+.timeline-container {
+    background-color: white;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    padding: 15px;
+    margin-bottom: 15px;
+}
+
+.timeline-header {
+    margin-bottom: 15px;
+}
+
+.timeline-title {
+    font-weight: 600;
+    color: #2c3e50;
+    font-size: 14px;
+}
+
+.timeline-chart {
+    position: relative;
+    min-height: 200px;
+}
+
+.timeline-row {
+    display: flex;
+    align-items: center;
+    margin-bottom: 25px;
+    position: relative;
+}
+
+.phase-label {
+    width: 80px;
+    font-weight: 500;
+    color: #495057;
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+.timeline-bar-container {
+    flex: 1;
+    position: relative;
+    height: 30px;
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    margin-left: 10px;
+}
+
+.timeline-bar {
+    position: absolute;
+    height: 100%;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    transition: all 0.3s ease;
+}
+
+.timeline-bar:hover {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    transform: translateY(-1px);
+}
+
+.timeline-bar-info {
+    color: white;
+    font-size: 11px;
+    font-weight: 600;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.7);
+}
+
+.duration-text {
+    background-color: rgba(0, 0, 0, 0.3);
+    padding: 2px 6px;
+    border-radius: 10px;
+}
+
+.time-markers {
+    position: absolute;
+    top: 35px;
+    left: 0;
+    right: 0;
+    height: 20px;
+}
+
+.start-time,
+.end-time {
+    position: absolute;
+    font-size: 10px;
+    color: #6c757d;
+    background-color: white;
+    padding: 2px 4px;
+    border: 1px solid #dee2e6;
+    border-radius: 3px;
+    white-space: nowrap;
+    transform: translateX(-50%);
+}
+
+.end-time {
+    transform: translateX(-50%);
+}
+
+
+
+
+
+

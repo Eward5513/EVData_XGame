@@ -1,29 +1,39 @@
 // Geographic Data Visualization Application Main File
 
+import { API_BASE_URL, ANALYSIS_CENTERS, CENTER_CHANGE_RADIUS_METERS } from './config.js';
+import { getSpeedColor as getSpeedColorUtil, getVehicleColors as getVehicleColorsUtil, blendColors as blendColorsUtil } from './utils/color.js';
+import { offsetLonLat } from './utils/geo.js';
+import { drawAnalysisCenterOverlay as drawCenterOverlay } from './overlays/analysisOverlay.js';
+import { drawIntersectionInference as drawInference } from './overlays/inference.js';
+import { displayTopology as displayTopologyExt } from './overlays/topology.js';
+import { drawSpeedChart as drawSpeedChartExt } from './charts/speedChart.js';
+import { drawGenericMetricChart as drawGenericMetricChartExt } from './charts/genericChart.js';
+import { renderVehicleTrajectories } from './renderers/vehicle.js';
+import { renderExcludedTrajectories } from './renderers/excluded.js';
+
 class GeoVisualization {
     constructor() {
         this.viewer = null;
         this.dataSource = null;
         this.topologyDataSource = null;
         this.overlayDataSource = null;
-        this.smoothingDataSource = null;
+        this.excludedDataSource = null;
         this.currentVehicleData = [];
         this.currentTrafficLightData = null;
         this.currentSpeedData = null;
         this.currentSpeedTrafficLights = null;
         this.currentTopologyData = null;
-        this.apiBaseUrl = 'http://127.0.0.1:5555/api';
+        this.apiBaseUrl = API_BASE_URL;
         this.currentSelectedMetric = 'speed';
         this.currentSelectedSegId = null;
         this.currentVehicleFilterMode = 'direction';
-        this.currentSmoothingData = null;
+        this.currentExcludedData = [];
+        this.allDates = [];
+        this.allRoadIds = [];
         
 		// Analysis centers and radius (A0003 and A0008 should both be displayed)
-		this.analysisCenters = {
-			A0003: { lon: 123.152539, lat: 32.345137 },
-			A0008: { lon: 123.181261, lat: 32.327137 }
-		};
-        this.centerChangeRadiusMeters = 50.0;
+		this.analysisCenters = ANALYSIS_CENTERS;
+        this.centerChangeRadiusMeters = CENTER_CHANGE_RADIUS_METERS;
         
         this.bindEvents();
         this.init();
@@ -32,7 +42,7 @@ class GeoVisualization {
     /**
      * Initialize Cesium map
      */
-    init() {
+    async init() {
         // Configure Cesium access token (if needed)
         Cesium.Ion.defaultAccessToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI1YjFhYTRjZS0zYzZlLTRmN2ItOTE5NC1mMzEwYjFiZjE3NTUiLCJpZCI6MzEzNjA3LCJpYXQiOjE3NTAzMDY1MjF9.k7exedEe-OwSQ2qgC5NNIMec5tXhTiCEp6of6vdYv0o';
 
@@ -65,28 +75,43 @@ class GeoVisualization {
         this.overlayDataSource = new Cesium.CustomDataSource('analysisOverlays');
         this.viewer.dataSources.add(this.overlayDataSource);
 
-        this.smoothingDataSource = new Cesium.CustomDataSource('smoothingComparison');
-        this.viewer.dataSources.add(this.smoothingDataSource);
+        this.excludedDataSource = new Cesium.CustomDataSource('excludedTrack');
+        this.viewer.dataSources.add(this.excludedDataSource);
 
         // Set initial view to China region
         this.viewer.camera.setView({
             destination: Cesium.Cartesian3.fromDegrees(116.4, 39.9, 1000000)
         });
 
-        // Load available dates for default road
-        setTimeout(() => {
-            this.loadAvailableDates();
-            this.loadSpeedAvailableDates();
-        }, 1000);
+        // Preload road IDs and populate all road selects
+        try {
+            await this.preloadAllRoadIds();
+            this.populateAllRoadSelects(this.allRoadIds);
+        } catch (e) {
+            console.warn('Failed to preload road IDs:', e);
+        }
+
+        // Populate raw dates for default road in Raw panel
+        try {
+            await this.loadRawDates();
+        } catch (e) {
+            // ignore errors for raw dates preload
+        }
+
+        // Preload all dates (union across roads) and populate date selects
+        this.allDates = [];
+        try {
+            await this.preloadAllDates();
+            this.populateAllDateSelects(this.allDates);
+        } catch (e) {
+            console.warn('Failed to preload dates:', e);
+        }
 
         // Ensure modal is hidden on initialization
         this.ensureModalHidden();
 
         // Draw analysis center and radius overlay
         this.drawAnalysisCenterOverlay();
-
-        // Load and render inferred intersection overlays for A0003 and A0008
-        this.loadIntersectionInferenceOverlays();
 
         console.log('Cesium map initialization completed');
     }
@@ -121,141 +146,18 @@ class GeoVisualization {
     }
 
     /**
-	 * Draw analysis center markers and radius circles for all configured roads
+     * Draw analysis center markers and radius circles for all configured roads
      */
     drawAnalysisCenterOverlay() {
-		if (!this.overlayDataSource || !this.viewer) return;
-		// Clear previous overlays
-		this.overlayDataSource.entities.removeAll();
-
-		const r = this.centerChangeRadiusMeters;
-
-		Object.entries(this.analysisCenters).forEach(([roadId, center]) => {
-			const lon = center.lon;
-			const lat = center.lat;
-			const centerPos = Cesium.Cartesian3.fromDegrees(lon, lat);
-
-			// Choose distinct colors per road for clarity
-			const pointColor = roadId === 'A0008' ? Cesium.Color.MAGENTA : Cesium.Color.CYAN;
-			const outlineColor = roadId === 'A0008' ? Cesium.Color.YELLOW : Cesium.Color.RED;
-			const fillColor = (roadId === 'A0008' ? Cesium.Color.MAGENTA : Cesium.Color.CYAN).withAlpha(0.15);
-
-			// Center point marker with label
-			this.overlayDataSource.entities.add({
-				id: `analysis_center_point_${roadId}`,
-				position: centerPos,
-				point: {
-					pixelSize: 14,
-					color: pointColor,
-					outlineColor: outlineColor,
-					outlineWidth: 2
-				},
-				label: {
-					text: `${roadId} Center`,
-					font: '14px sans-serif',
-					fillColor: Cesium.Color.WHITE,
-					outlineColor: Cesium.Color.BLACK,
-					outlineWidth: 2,
-					style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-					verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-					pixelOffset: new Cesium.Cartesian2(0, -20)
-				},
-				description: `<h3>${roadId} Direction Analysis Center</h3><p>Lon: ${lon.toFixed(6)}, Lat: ${lat.toFixed(6)}</p>`
-			});
-
-			// Radius circle (meters)
-			this.overlayDataSource.entities.add({
-				id: `analysis_center_radius_${roadId}`,
-				position: centerPos,
-				ellipse: {
-					semiMajorAxis: r,
-					semiMinorAxis: r,
-					material: fillColor,
-					outline: true,
-					outlineColor: outlineColor,
-					outlineWidth: 2
-				},
-				description: `<h3>${roadId} Near-Center Radius</h3><p>Radius: ${r.toFixed(1)} m</p>`
-			});
-		});
+        if (!this.overlayDataSource) return;
+        drawCenterOverlay(this.overlayDataSource, this.analysisCenters, this.centerChangeRadiusMeters);
     }
 
     /**
      * Draw a simple line chart for a generic metric over time using canvas
      */
     drawGenericMetricChart(containerEl, points, metricKey, title = '') {
-        if (!containerEl) return;
-        const width = containerEl.clientWidth || 800;
-        const height = 320;
-        const padding = 50;
-        const canvasId = 'genericMetricCanvas';
-        containerEl.innerHTML = `<div style="margin-bottom:6px;font-weight:bold;">${title} - ${metricKey}</div><canvas id="${canvasId}" width="${width}" height="${height}" style="border:1px solid #ccc;border-radius:4px;"></canvas>`;
-        const canvas = document.getElementById(canvasId);
-        if (!canvas) return;
-        const ctx = canvas.getContext('2d');
-
-        const times = points.map(p => p.collectiontime);
-        const values = points.map(p => {
-            const v = p[metricKey];
-            if (metricKey === 'gearnum' || metricKey === 'havebrake' || metricKey === 'havedriver') {
-                // Cast categorical/flag to number if possible; else 0
-                const n = Number(v);
-                return Number.isFinite(n) ? n : 0;
-            }
-            const n = Number(v);
-            return Number.isFinite(n) ? n : 0;
-        });
-        if (times.length === 0) return;
-        const minT = Math.min(...times);
-        const maxT = Math.max(...times);
-        const minV = Math.min(...values);
-        const maxV = Math.max(...values);
-
-        const xMap = (t) => {
-            if (maxT === minT) return padding + (width - 2 * padding) / 2;
-            return padding + (t - minT) / (maxT - minT) * (width - 2 * padding);
-        };
-        const yMap = (v) => {
-            if (maxV === minV) return padding + (height - 2 * padding) / 2;
-            const norm = (v - minV) / (maxV - minV);
-            return padding + (height - 2 * padding) * (1 - norm);
-        };
-
-        // Axes
-        ctx.clearRect(0, 0, width, height);
-        ctx.strokeStyle = '#333';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(padding, padding);
-        ctx.lineTo(padding, height - padding);
-        ctx.lineTo(width - padding, height - padding);
-        ctx.stroke();
-
-        // Title
-        ctx.fillStyle = '#000';
-        ctx.font = '14px sans-serif';
-        ctx.fillText(`${metricKey} over time`, padding, padding - 12);
-
-        // Line
-        ctx.strokeStyle = '#007bff';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        points.forEach((p, i) => {
-            const x = xMap(p.collectiontime);
-            const y = yMap(values[i]);
-            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        });
-        ctx.stroke();
-
-        // Dots
-        ctx.fillStyle = '#007bff';
-        points.forEach((p, i) => {
-            const x = xMap(p.collectiontime);
-            const y = yMap(values[i]);
-            ctx.beginPath();
-            ctx.arc(x, y, 2, 0, Math.PI * 2);
-            ctx.fill();
-        });
+        return drawGenericMetricChartExt(containerEl, points, metricKey, title);
     }
 
     /**
@@ -280,121 +182,20 @@ class GeoVisualization {
         }
     }
 
-    /**
-     * Compute destination lon/lat offset by distance (m) along angle (deg, 0=E,90=N)
-     */
-    offsetLonLat(lon, lat, distanceMeters, angleDeg) {
-        const R = 6378137.0;
-        const rad = Math.PI / 180.0;
-        const deg = 180.0 / Math.PI;
-        const theta = angleDeg * rad; // 0=E, CCW positive
-        const dx = distanceMeters * Math.cos(theta);
-        const dy = distanceMeters * Math.sin(theta);
-        const latRad = lat * rad;
-        const dLon = (dx / (R * Math.cos(latRad))) * deg;
-        const dLat = (dy / R) * deg;
-        return [lon + dLon, lat + dLat];
+    clearIntersectionInferenceOverlays() {
+        if (this.topologyDataSource) {
+            this.topologyDataSource.entities.removeAll();
+        }
     }
+
+    
 
     /**
      * Draw center, axes and stop lines from inference JSON for a given road
      */
     drawIntersectionInference(roadId, inference) {
-        if (!inference || !inference.center_point) return;
-        const cp = inference.center_point;
-        const centerLon = Number(cp.lon);
-        const centerLat = Number(cp.lat);
-        const centerX = Number(cp.x_m);
-        const centerY = Number(cp.y_m);
-        const centerXY = [centerX, centerY];
-
-        // Distinct colors per road
-        const colorAxis = (roadId === 'A0008') ? Cesium.Color.MAGENTA : Cesium.Color.CYAN;
-        const colorStop = (roadId === 'A0008') ? Cesium.Color.YELLOW : Cesium.Color.ORANGE;
-        const colorCenter = (roadId === 'A0008') ? Cesium.Color.MAGENTA : Cesium.Color.CYAN;
-
-        // Center point
-        this.topologyDataSource.entities.add({
-            id: `intersection_center_${roadId}`,
-            position: Cesium.Cartesian3.fromDegrees(centerLon, centerLat),
-            point: {
-                pixelSize: 12,
-                color: colorCenter,
-                outlineColor: Cesium.Color.WHITE,
-                outlineWidth: 2
-            },
-            label: {
-                text: `${roadId} Center`,
-                font: '14px sans-serif',
-                fillColor: Cesium.Color.WHITE,
-                outlineColor: Cesium.Color.BLACK,
-                outlineWidth: 2,
-                style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-                verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-                pixelOffset: new Cesium.Cartesian2(0, -20)
-            }
-        });
-
-        const L_vis = 120.0; // meters for axis visualization
-        const Ls = 20.0;     // meters for stop line length
-
-        (inference.approaches || []).forEach(app => {
-            try {
-                const axis = app.axis || {};
-                const angleDeg = Number(axis.angle_deg) || 0.0; // 0=E,90=N
-                const rho = Number(axis.rho_m) || 0.0;
-                const n = axis.n || [0, 1];
-                const nDotCenter = n[0] * centerXY[0] + n[1] * centerXY[1];
-                const alpha = rho - nDotCenter; // meters along normal from center to closest axis point
-
-                const nAngle = (angleDeg + 90.0) % 360.0;
-                const tAngle = angleDeg;
-
-                // Base point on axis near center
-                const [axisBaseLon, axisBaseLat] = this.offsetLonLat(centerLon, centerLat, alpha, nAngle);
-                const [lon1, lat1] = this.offsetLonLat(axisBaseLon, axisBaseLat, -L_vis / 2, tAngle);
-                const [lon2, lat2] = this.offsetLonLat(axisBaseLon, axisBaseLat, +L_vis / 2, tAngle);
-
-                // Axis line
-                this.topologyDataSource.entities.add({
-                    id: `axis_${roadId}_${app.cluster_label}`,
-                    polyline: {
-                        positions: [
-                            Cesium.Cartesian3.fromDegrees(lon1, lat1),
-                            Cesium.Cartesian3.fromDegrees(lon2, lat2)
-                        ],
-                        width: 4,
-                        material: colorAxis.withAlpha(0.9),
-                        clampToGround: true
-                    },
-                    description: `<h3>Axis ${app.label_hint || app.cluster_label}</h3><p>Angle: ${angleDeg.toFixed(1)}°</p>`
-                });
-
-                // Stop line if available
-                const sStop = app.stopline && (app.stopline.s_stop_m_from_center !== null && app.stopline.s_stop_m_from_center !== undefined)
-                    ? Number(app.stopline.s_stop_m_from_center) : null;
-                if (sStop !== null && Number.isFinite(sStop)) {
-                    const [sLon, sLat] = this.offsetLonLat(centerLon, centerLat, sStop, tAngle);
-                    const [q1Lon, q1Lat] = this.offsetLonLat(sLon, sLat, -Ls / 2, nAngle);
-                    const [q2Lon, q2Lat] = this.offsetLonLat(sLon, sLat, +Ls / 2, nAngle);
-                    this.topologyDataSource.entities.add({
-                        id: `stopline_${roadId}_${app.cluster_label}`,
-                        polyline: {
-                            positions: [
-                                Cesium.Cartesian3.fromDegrees(q1Lon, q1Lat),
-                                Cesium.Cartesian3.fromDegrees(q2Lon, q2Lat)
-                            ],
-                            width: 5,
-                            material: colorStop.withAlpha(0.9),
-                            clampToGround: true
-                        },
-                        description: `<h3>Stop Line ${app.label_hint || app.cluster_label}</h3><p>s from center: ${sStop.toFixed(2)} m</p>`
-                    });
-                }
-            } catch (e) {
-                console.warn('Failed to render approach overlay:', e);
-            }
-        });
+        if (!this.topologyDataSource) return;
+        drawInference(this.topologyDataSource, roadId, inference, offsetLonLat);
     }
 
     /**
@@ -403,24 +204,27 @@ class GeoVisualization {
     bindEvents() {
         const loadDataBtn = document.getElementById('loadDataBtn');
         const clearDataBtn = document.getElementById('clearDataBtn');
-        const loadDatesBtn = document.getElementById('loadDatesBtn');
+        const pointsOnlyCheckbox = document.getElementById('pointsOnly');
         const vehicleModeSelect = document.getElementById('vehicleMode');
-        const roadIdSelect = document.getElementById('roadId');
-        const vehicleFilterModeSelect = document.getElementById('vehicleFilterMode');
-        const loadSmoothingBtn = document.getElementById('loadSmoothingBtn');
-        const clearSmoothingBtn = document.getElementById('clearSmoothingBtn');
+        const vehicleFilterModeSelect = null;
+
+        // Excluded trajectories elements
+        const loadExcludedBtn = document.getElementById('loadExcludedBtn');
+        const clearExcludedBtn = document.getElementById('clearExcludedBtn');
+        
+        // Raw CSV panel elements
+        const loadRawBtn = document.getElementById('loadRawBtn');
+        const clearRawBtn = document.getElementById('clearRawBtn');
+        const rawRoadSel = document.getElementById('rawRoadId');
         
         // Traffic light query elements
         const loadCyclesBtn = document.getElementById('loadCyclesBtn');
         const queryTrafficLightBtn = document.getElementById('queryTrafficLightBtn');
-        const trafficRoadIdSelect = document.getElementById('trafficRoadId');
         const closeTimelineModal = document.getElementById('closeTimelineModal');
         const timelineModal = document.getElementById('timelineModal');
         
         // Speed analysis elements
-        const loadSpeedDatesBtn = document.getElementById('loadSpeedDatesBtn');
         const analyzeSpeedBtn = document.getElementById('analyzeSpeedBtn');
-        const speedRoadIdSelect = document.getElementById('speedRoadId');
         const speedModeSelect = document.getElementById('speedMode');
         const loadTimeRangeBtn = document.getElementById('loadTimeRangeBtn');
         const closeSpeedModal = document.getElementById('closeSpeedModal');
@@ -431,7 +235,10 @@ class GeoVisualization {
         // Topology elements (panel removed) - guard for null
         const loadTopologyBtn = document.getElementById('loadTopologyBtn');
         const clearTopologyBtn = document.getElementById('clearTopologyBtn');
-        const topologyRoadIdSelect = document.getElementById('topologyRoadId');
+
+        // Intersection overlay (inference) elements
+        const loadInferenceBtn = document.getElementById('loadInferenceBtn');
+        const clearInferenceBtn = document.getElementById('clearInferenceBtn');
 
 
         loadDataBtn.addEventListener('click', () => {
@@ -442,9 +249,14 @@ class GeoVisualization {
             this.clearData();
         });
 
-        loadDatesBtn.addEventListener('click', () => {
-            this.loadAvailableDates();
-        });
+        // Re-render when toggling points-only if data is already loaded
+        if (pointsOnlyCheckbox) {
+            pointsOnlyCheckbox.addEventListener('change', () => {
+                if (this.currentVehicleData && this.currentVehicleData.length > 0) {
+                    this.visualizeData(this.currentVehicleData);
+                }
+            });
+        }
 
         // Handle vehicle mode switching
         vehicleModeSelect.addEventListener('change', (e) => {
@@ -459,28 +271,40 @@ class GeoVisualization {
             });
         }
 
-        // Handle road ID change to auto-load dates
-        roadIdSelect.addEventListener('change', () => {
-            this.loadAvailableDates();
-        });
+        // Road selection change needs no handler (dates are preloaded globally)
 
-        if (vehicleFilterModeSelect) {
-            this.currentVehicleFilterMode = vehicleFilterModeSelect.value || 'direction';
-            vehicleFilterModeSelect.addEventListener('change', (e) => {
-                this.currentVehicleFilterMode = e.target.value || 'direction';
-                this.updateVehicleFilterVisibility();
+        // Movement filter mode removed; always use direction filters
+        this.currentVehicleFilterMode = 'direction';
+
+        
+
+        // Excluded panel events
+        // No per-road excluded date loading; dates are preloaded globally
+        if (loadExcludedBtn) {
+            loadExcludedBtn.addEventListener('click', () => {
+                this.loadExcludedData();
+            });
+        }
+        if (clearExcludedBtn) {
+            clearExcludedBtn.addEventListener('click', () => {
+                this.clearExcludedData();
             });
         }
 
-        if (loadSmoothingBtn) {
-            loadSmoothingBtn.addEventListener('click', () => {
-                this.loadSmoothingComparison();
+        // Raw CSV panel events
+        if (loadRawBtn) {
+            loadRawBtn.addEventListener('click', () => {
+                this.loadRawData();
             });
         }
-
-        if (clearSmoothingBtn) {
-            clearSmoothingBtn.addEventListener('click', () => {
-                this.clearSmoothingComparison();
+        if (clearRawBtn) {
+            clearRawBtn.addEventListener('click', () => {
+                this.clearRawData();
+            });
+        }
+        if (rawRoadSel) {
+            rawRoadSel.addEventListener('change', () => {
+                this.loadRawDates();
             });
         }
 
@@ -493,19 +317,13 @@ class GeoVisualization {
             this.queryTrafficLightStatus();
         });
 
-        // Speed analysis event listeners
-        loadSpeedDatesBtn.addEventListener('click', () => {
-            this.loadSpeedAvailableDates();
-        });
+        // Speed analysis event listeners (no date loading button)
 
         analyzeSpeedBtn.addEventListener('click', () => {
             this.analyzeSpeed();
         });
 
-        // Handle speed road ID change to auto-load dates
-        speedRoadIdSelect.addEventListener('change', () => {
-            this.loadSpeedAvailableDates();
-        });
+        // Speed road selection change needs no handler (dates are preloaded globally)
 
         // Handle speed mode switching
         speedModeSelect.addEventListener('change', (e) => {
@@ -540,6 +358,30 @@ class GeoVisualization {
         if (clearTopologyBtn) {
             clearTopologyBtn.addEventListener('click', () => {
                 this.clearTopology();
+            });
+        }
+
+        if (loadInferenceBtn) {
+            loadInferenceBtn.addEventListener('click', async () => {
+                try {
+                    const status = document.getElementById('inferenceStatus');
+                    const text = document.getElementById('inferenceStatusText');
+                    if (status && text) { status.style.display = 'block'; text.textContent = 'Loading overlays...'; }
+                    await this.loadIntersectionInferenceOverlays();
+                    if (status && text) { text.textContent = 'Overlays loaded'; setTimeout(()=> status.style.display='none', 2000); }
+                } catch (e) {
+                    const status = document.getElementById('inferenceStatus');
+                    const text = document.getElementById('inferenceStatusText');
+                    if (status && text) { status.style.display = 'block'; text.textContent = `Error: ${e.message}`; }
+                }
+            });
+        }
+        if (clearInferenceBtn) {
+            clearInferenceBtn.addEventListener('click', () => {
+                this.clearIntersectionInferenceOverlays();
+                const status = document.getElementById('inferenceStatus');
+                const text = document.getElementById('inferenceStatusText');
+                if (status && text) { status.style.display = 'block'; text.textContent = 'Overlays cleared'; setTimeout(()=> status.style.display='none', 1500); }
             });
         }
 
@@ -647,20 +489,9 @@ class GeoVisualization {
     }
 
     updateVehicleFilterVisibility() {
-        const mode = this.currentVehicleFilterMode || 'direction';
         const directionContainers = document.querySelectorAll('.direction-filter-container');
-        const movementContainers = document.querySelectorAll('.movement-filter-container');
-
         directionContainers.forEach((el) => {
-            if (el) {
-                el.style.display = mode === 'direction' ? 'block' : 'none';
-            }
-        });
-
-        movementContainers.forEach((el) => {
-            if (el) {
-                el.style.display = mode === 'movement' ? 'block' : 'none';
-            }
+            if (el) { el.style.display = 'block'; }
         });
     }
 
@@ -711,6 +542,8 @@ class GeoVisualization {
         try {
             const roadId = document.getElementById('roadId').value;
             const date = document.getElementById('dateFilter').value;
+            const dataSourceSel = document.getElementById('dataSource');
+            const src = (dataSourceSel && dataSourceSel.value) || 'merged';
             const timeRangeInfo = document.getElementById('vehicleTimeRangeInfo');
             
             if (!date) {
@@ -720,7 +553,7 @@ class GeoVisualization {
             
             timeRangeInfo.textContent = 'Loading time range...';
             
-            const response = await fetch(`${this.apiBaseUrl}/speed/time-range?road_id=${roadId}&date=${date}`);
+            const response = await fetch(`${this.apiBaseUrl}/speed/time-range?road_id=${roadId}&date=${date}&source=${encodeURIComponent(src)}`);
             const result = await response.json();
             
             if (result.status === 'success') {
@@ -759,45 +592,247 @@ class GeoVisualization {
         }
     }
 
+    
+
     /**
-     * Load available dates for the selected road
+     * Preload all available dates (union across all configured roads)
      */
-    async loadAvailableDates() {
+    async preloadAllDates() {
         try {
-            const roadId = document.getElementById('roadId').value;
-            const dateSelect = document.getElementById('dateFilter');
-            
-            this.showStatus('Loading available dates...', true);
-            
-            const response = await fetch(`${this.apiBaseUrl}/vehicle/dates?road_id=${roadId}`);
-            
-            if (!response.ok) {
-                throw new Error(`HTTP error: ${response.status}`);
+            const roadIds = (this.allRoadIds && this.allRoadIds.length > 0)
+                ? this.allRoadIds
+                : Object.keys(this.analysisCenters || {});
+            const union = new Set();
+            const sourceSel = document.getElementById('dataSource');
+            const sourceVal = (sourceSel && sourceSel.value) || 'merged';
+            for (const r of roadIds) {
+                try {
+                    const response = await fetch(`${this.apiBaseUrl}/vehicle/dates?road_id=${r}&source=${encodeURIComponent(sourceVal)}`);
+                    if (!response.ok) continue;
+                    const result = await response.json();
+                    if (result && result.status === 'success' && Array.isArray(result.dates)) {
+                        result.dates.forEach(d => union.add(String(d)));
+                    }
+                } catch (e) {
+                    // ignore per-road errors
+                }
             }
-            
-            const result = await response.json();
-            
-            if (result.status === 'success') {
-                // Clear existing options
-                dateSelect.innerHTML = '<option value="" selected>All Dates</option>';
-                
-                // Add new date options
-                result.dates.forEach(date => {
-                    const option = document.createElement('option');
-                    option.value = date;
-                    option.textContent = date;
-                    dateSelect.appendChild(option);
-                });
-                
-                this.showStatus(`Loaded ${result.total_dates} available dates`);
-            } else {
-                throw new Error(result.message || 'Failed to load dates');
-            }
-            
-        } catch (error) {
-            console.error('Error loading dates:', error);
-            this.showStatus(`Failed to load dates: ${error.message}`);
+            this.allDates = Array.from(union).sort();
+        } catch (e) {
+            this.allDates = [];
+            throw e;
         }
+    }
+
+    /**
+     * Populate all date selects with the same list
+     */
+    populateAllDateSelects(dates) {
+        const ids = ['dateFilter', 'speedDate', 'excludedDate'];
+        ids.forEach(id => {
+            const sel = document.getElementById(id);
+            if (!sel) return;
+            sel.innerHTML = '<option value="" selected>All Dates</option>';
+            (dates || []).forEach(d => {
+                const opt = document.createElement('option');
+                opt.value = String(d);
+                opt.textContent = String(d);
+                sel.appendChild(opt);
+            });
+        });
+    }
+
+    /**
+     * Preload road IDs from configuration (analysisCenters)
+     */
+    async preloadAllRoadIds() {
+        try {
+            const centers = this.analysisCenters || {};
+            this.allRoadIds = Object.keys(centers);
+        } catch (e) {
+            this.allRoadIds = [];
+            throw e;
+        }
+    }
+
+    /**
+     * Populate all road selects with the same list
+     */
+    populateAllRoadSelects(roadIds) {
+        const ids = ['roadId', 'trafficRoadId', 'speedRoadId', 'excludedRoadId', 'topologyRoadId', 'rawRoadId'];
+        ids.forEach(id => {
+            const sel = document.getElementById(id);
+            if (!sel) return;
+            sel.innerHTML = '';
+            (roadIds || []).forEach(r => {
+                const opt = document.createElement('option');
+                opt.value = String(r);
+                opt.textContent = String(r);
+                sel.appendChild(opt);
+            });
+        });
+    }
+
+    /**
+     * Excluded panel: status helper
+     */
+    showExcludedStatus(message, visible = true) {
+        const status = document.getElementById('excludedStatus');
+        const text = document.getElementById('excludedStatusText');
+        if (status && text) {
+            text.textContent = message || '';
+            status.style.display = visible ? 'block' : 'none';
+        }
+    }
+
+    /**
+     * Raw panel: status helper
+     */
+    showRawStatus(message, visible = true) {
+        const status = document.getElementById('rawStatus');
+        const text = document.getElementById('rawStatusText');
+        if (status && text) {
+            text.textContent = message || '';
+            status.style.display = visible ? 'block' : 'none';
+        }
+    }
+
+    /**
+     * Load available raw dates for selected road
+     */
+    async loadRawDates() {
+        const roadSel = document.getElementById('rawRoadId');
+        const dateSel = document.getElementById('rawDate');
+        if (!roadSel || !dateSel) return;
+        const roadId = roadSel.value;
+        try {
+            this.showRawStatus('Loading dates...', true);
+            const resp = await fetch(`${this.apiBaseUrl}/raw/dates?road_id=${roadId}`);
+            const result = await resp.json();
+            dateSel.innerHTML = '<option value="" selected>Select Date</option>';
+            if (result && result.status === 'success' && Array.isArray(result.dates)) {
+                result.dates.forEach(d => {
+                    const opt = document.createElement('option');
+                    opt.value = String(d);
+                    opt.textContent = String(d);
+                    dateSel.appendChild(opt);
+                });
+                this.showRawStatus(`Loaded ${result.total_dates} dates`, true);
+                setTimeout(()=> this.showRawStatus('', false), 1500);
+            } else {
+                this.showRawStatus('No dates available', true);
+            }
+        } catch (e) {
+            this.showRawStatus(`Failed to load dates: ${e.message}`, true);
+        }
+    }
+
+    /**
+     * Load raw CSV trajectory data
+     */
+    async loadRawData() {
+        try {
+            const roadId = document.getElementById('rawRoadId').value;
+            const date = document.getElementById('rawDate').value;
+            const vehicleId = document.getElementById('rawVehicleId') ? document.getElementById('rawVehicleId').value : '';
+
+            if (!date) {
+                this.showRawStatus('Please select a date', true);
+                return;
+            }
+
+            this.showRawStatus('Loading raw trajectories...', true);
+
+            let url = `${this.apiBaseUrl}/raw/data?road_id=${roadId}&date=${encodeURIComponent(date)}`;
+            if (vehicleId) url += `&vehicle_id=${encodeURIComponent(vehicleId)}`;
+
+            const response = await fetch(url);
+            const result = await response.json();
+            if (result.status === 'success') {
+                const data = result.data || [];
+                this.currentVehicleData = data;
+                this.visualizeData(data);
+                this.showRawStatus(`Loaded ${data.length} points`);
+            } else {
+                throw new Error(result.message || 'Failed to load raw data');
+            }
+        } catch (e) {
+            console.error('Error loading raw data:', e);
+            this.showRawStatus(`Failed to load raw data: ${e.message}`, true);
+        }
+    }
+
+    /**
+     * Clear raw visualization (reuses main clear)
+     */
+    clearRawData() {
+        this.clearData();
+        this.showRawStatus('Cleared', true);
+        setTimeout(()=> this.showRawStatus('', false), 1200);
+    }
+
+    
+
+    /**
+     * Load excluded trajectory points for selected road/date
+     */
+    async loadExcludedData() {
+        try {
+            const roadId = document.getElementById('excludedRoadId').value;
+            const date = document.getElementById('excludedDate').value;
+            const vehicleId = document.getElementById('excludedVehicleId') ? document.getElementById('excludedVehicleId').value : '';
+            this.showExcludedStatus('Loading excluded trajectories...', true);
+
+            let url = `${this.apiBaseUrl}/excluded/data?road_id=${roadId}`;
+            if (date) {
+                url += `&date=${encodeURIComponent(date)}`;
+            }
+            if (vehicleId) {
+                url += `&vehicle_id=${encodeURIComponent(vehicleId)}`;
+            }
+
+            const response = await fetch(url);
+            const result = await response.json();
+            if (result.status === 'success') {
+                const data = result.data || [];
+                this.currentExcludedData = data;
+                this.visualizeExcludedData(data);
+                const segments = result.total_segments != null ? result.total_segments : 'N/A';
+                this.showExcludedStatus(`Loaded ${data.length} points from ${segments} segment(s)`);
+            } else {
+                throw new Error(result.message || 'Failed to load excluded data');
+            }
+        } catch (e) {
+            console.error('Error loading excluded data:', e);
+            this.showExcludedStatus(`Failed to load excluded data: ${e.message}`);
+        }
+    }
+
+    /**
+     * Clear excluded visualization
+     */
+    clearExcludedData() {
+        if (this.excludedDataSource) {
+            this.excludedDataSource.entities.removeAll();
+        }
+        this.currentExcludedData = [];
+        this.showExcludedStatus('Cleared', true);
+    }
+
+    /**
+     * Visualize excluded trajectories with distinct style
+     */
+    visualizeExcludedData(data) {
+        if (!this.excludedDataSource || !this.viewer || !Array.isArray(data) || data.length === 0) return;
+        renderExcludedTrajectories(
+            this.excludedDataSource,
+            this.viewer,
+            data,
+            (s) => this.getSpeedColor(s),
+            (n) => this.getVehicleColors(n),
+            (a, b) => this.blendColors(a, b),
+            (p, i, multi, d) => this.createPointDescription(p, i, multi, d)
+        );
     }
 
     /**
@@ -809,7 +844,7 @@ class GeoVisualization {
 
             const vehicleMode = document.getElementById('vehicleMode').value;
             const roadId = document.getElementById('roadId').value;
-            const dataLimit = document.getElementById('dataLimit').value;
+            const dataSource = (document.getElementById('dataSource') && document.getElementById('dataSource').value) || 'merged';
             const dateFilter = document.getElementById('dateFilter').value;
             const filterMode = this.currentVehicleFilterMode || 'direction';
 
@@ -827,17 +862,12 @@ class GeoVisualization {
                 apiUrl = `${this.apiBaseUrl}/vehicle/data?vehicle_count=${vehicleCount}&road_id=${roadId}`;
                 summaryUrl = `${this.apiBaseUrl}/vehicle/summary?vehicle_count=${vehicleCount}&road_id=${roadId}`;
                 
-                if (filterMode === 'direction') {
-                    const direction = document.getElementById('batchDirection').value;
-                    if (direction) {
-                        apiUrl += `&direction=${direction}`;
-                        summaryUrl += `&direction=${direction}`;
-                    }
-                } else if (filterMode === 'movement') {
-                    const movement = document.getElementById('batchMovement').value;
-                    if (movement) {
-                        apiUrl += `&movement=${movement}`;
-                        summaryUrl += `&movement=${movement}`;
+                {
+                    const selected = Array.from(document.querySelectorAll('input[name="batchDirection"]:checked')).map(el => el.value);
+                    if (selected.length > 0) {
+                        const dirParam = selected.join(',');
+                        apiUrl += `&direction=${encodeURIComponent(dirParam)}`;
+                        summaryUrl += `&direction=${encodeURIComponent(dirParam)}`;
                     }
                 }
             } else if (vehicleMode === 'time_range') {
@@ -863,17 +893,12 @@ class GeoVisualization {
                 apiUrl = `${this.apiBaseUrl}/vehicle/data?start_time=${startTime}&end_time=${endTime}&road_id=${roadId}`;
                 summaryUrl = `${this.apiBaseUrl}/vehicle/summary?start_time=${startTime}&end_time=${endTime}&road_id=${roadId}`;
                 
-                if (filterMode === 'direction') {
-                    const direction = document.getElementById('timeRangeDirection').value;
-                    if (direction) {
-                        apiUrl += `&direction=${direction}`;
-                        summaryUrl += `&direction=${direction}`;
-                    }
-                } else if (filterMode === 'movement') {
-                    const movement = document.getElementById('timeRangeMovement').value;
-                    if (movement) {
-                        apiUrl += `&movement=${movement}`;
-                        summaryUrl += `&movement=${movement}`;
+                {
+                    const selected = Array.from(document.querySelectorAll('input[name="timeRangeDirection"]:checked')).map(el => el.value);
+                    if (selected.length > 0) {
+                        const dirParam = selected.join(',');
+                        apiUrl += `&direction=${encodeURIComponent(dirParam)}`;
+                        summaryUrl += `&direction=${encodeURIComponent(dirParam)}`;
                     }
                 }
             }
@@ -884,17 +909,17 @@ class GeoVisualization {
                 summaryUrl += `&date=${dateFilter}`;
             }
 
-            if (dataLimit && vehicleMode !== 'time_range') {
-                apiUrl += `&limit=${dataLimit}`;
+            // Add source selection
+            if (dataSource) {
+                apiUrl += `&source=${encodeURIComponent(dataSource)}`;
+                summaryUrl += `&source=${encodeURIComponent(dataSource)}`;
             }
 
-            // Send request to get data
+            // Single request path (backend supports multi-direction via comma-separated param)
             const response = await fetch(apiUrl);
-            
             if (!response.ok) {
                 throw new Error(`HTTP error: ${response.status}`);
             }
-
             const result = await response.json();
 
             if (result.status === 'success') {
@@ -937,105 +962,28 @@ class GeoVisualization {
      * Visualize data on the map
      */
     visualizeData(data) {
-        if (!data || data.length === 0) {
-            console.warn('No data to visualize');
+        if (!this.dataSource || !this.viewer || !data || data.length === 0) {
+            if (!data || data.length === 0) console.warn('No data to visualize');
             return;
         }
-
-        // Clear previous data
-        this.dataSource.entities.removeAll();
-
-        // Group data by vehicle ID + date + seg_id (if present)
-        const vehicleGroups = {};
-        data.forEach(point => {
-            // Create unique key combining vehicle_id, date, and seg_id
-            const segId = (typeof point.seg_id === 'number') ? point.seg_id : 0;
-            const trajectoryKey = `${point.vehicle_id}_${point.date}_${segId}`;
-            if (!vehicleGroups[trajectoryKey]) {
-                vehicleGroups[trajectoryKey] = {
-                    vehicle_id: point.vehicle_id,
-                    date: point.date,
-                    seg_id: segId,
-                    points: []
-                };
-            }
-            vehicleGroups[trajectoryKey].points.push(point);
-        });
-
-        const trajectoryKeys = Object.keys(vehicleGroups);
-        const colors = this.getVehicleColors(trajectoryKeys.length);
-
-        // Process each trajectory separately (vehicle+date combination)
-        trajectoryKeys.forEach((trajectoryKey, trajectoryIndex) => {
-            const trajectoryInfo = vehicleGroups[trajectoryKey];
-            const trajectoryData = trajectoryInfo.points;
-            const trajectoryColor = colors[trajectoryIndex];
-            const positions = [];
-
-            // Create entity for each data point of this trajectory
-            trajectoryData.forEach((point, index) => {
-                const position = Cesium.Cartesian3.fromDegrees(
-                    point.longitude, 
-                    point.latitude, 
-                    0
-                );
-
-                positions.push(position);
-
-                // Determine point color: use trajectory color modulated by speed
-                let pointColor = this.getSpeedColor(point.speed);
-                if (trajectoryKeys.length > 1) {
-                    // In multi-trajectory mode, blend speed color with trajectory color
-                    pointColor = this.blendColors(trajectoryColor, pointColor);
-                }
-
-                // Create point entity
-                const pointEntity = this.dataSource.entities.add({
-                    position: position,
-                    point: {
-                        pixelSize: 8,
-                        color: pointColor,
-                        outlineColor: Cesium.Color.WHITE,
-                        outlineWidth: 2,
-                        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND
-                    },
-                    description: this.createPointDescription(point, index, trajectoryKeys.length > 1, trajectoryInfo.date)
-                });
-            });
-
-            // Create trajectory line for this trajectory
-            if (positions.length > 1) {
-                this.dataSource.entities.add({
-                    polyline: {
-                        positions: positions,
-                        width: trajectoryKeys.length > 1 ? 4 : 3,
-                        material: trajectoryColor.withAlpha(0.8),
-                        clampToGround: true
-                    },
-                    description: `Vehicle ${trajectoryInfo.vehicle_id} - ${trajectoryInfo.date} - seg ${trajectoryInfo.seg_id} (${trajectoryData.length} points)`
-                });
-            }
-        });
-
-        // Fly to data range
-        this.viewer.flyTo(this.dataSource);
-
-        console.log(`Visualized ${data.length} data points from ${trajectoryKeys.length} trajectory(ies)`);
+        const pointsOnly = !!(document.getElementById('pointsOnly') && document.getElementById('pointsOnly').checked);
+        renderVehicleTrajectories(
+            this.dataSource,
+            this.viewer,
+            data,
+            (s) => this.getSpeedColor(s),
+            (n) => this.getVehicleColors(n),
+            (a, b) => this.blendColors(a, b),
+            (p, i, multi, d) => this.createPointDescription(p, i, multi, d),
+            pointsOnly
+        );
     }
 
     /**
      * Get color based on speed
      */
     getSpeedColor(speed) {
-        if (speed < 10) {
-            return Cesium.Color.GREEN;
-        } else if (speed < 30) {
-            return Cesium.Color.YELLOW;
-        } else if (speed < 50) {
-            return Cesium.Color.ORANGE;
-        } else {
-            return Cesium.Color.RED;
-        }
+        return getSpeedColorUtil(speed);
     }
 
     /**
@@ -1054,6 +1002,7 @@ class GeoVisualization {
                     ${typeof point.seg_id === 'number' ? `<tr><td>Seg ID:</td><td>${point.seg_id}</td></tr>` : ''}
                     <tr><td>Date:</td><td>${point.date}</td></tr>
                     <tr><td>Time:</td><td>${point.time_stamp}</td></tr>
+                    ${point.end_time ? `<tr><td>End Time:</td><td>${point.end_time}</td></tr>` : ''}
                     <tr><td>Road ID:</td><td>${point.road_id}</td></tr>
                     <tr><td>Longitude:</td><td>${point.longitude.toFixed(6)}</td></tr>
                     <tr><td>Latitude:</td><td>${point.latitude.toFixed(6)}</td></tr>
@@ -1072,43 +1021,14 @@ class GeoVisualization {
      * Get distinct colors for different vehicles
      */
     getVehicleColors(vehicleCount) {
-        const baseColors = [
-            Cesium.Color.CYAN,
-            Cesium.Color.ORANGE,
-            Cesium.Color.LIME,
-            Cesium.Color.MAGENTA,
-            Cesium.Color.YELLOW,
-            Cesium.Color.LIGHTBLUE,
-            Cesium.Color.LIGHTGREEN,
-            Cesium.Color.PINK,
-            Cesium.Color.LIGHTCYAN,
-            Cesium.Color.LIGHTGRAY
-        ];
-
-        const colors = [];
-        for (let i = 0; i < vehicleCount; i++) {
-            if (i < baseColors.length) {
-                colors.push(baseColors[i]);
-            } else {
-                // Generate more colors by cycling through hues
-                const hue = (i * 137.5) % 360; // Golden angle for good distribution
-                colors.push(Cesium.Color.fromHsl(hue / 360, 0.7, 0.6));
-            }
-        }
-        return colors;
+        return getVehicleColorsUtil(vehicleCount);
     }
 
     /**
      * Blend two colors together
      */
     blendColors(vehicleColor, speedColor, ratio = 0.7) {
-        // Blend vehicle color (70%) with speed color (30%)
-        return new Cesium.Color(
-            vehicleColor.red * ratio + speedColor.red * (1 - ratio),
-            vehicleColor.green * ratio + speedColor.green * (1 - ratio),
-            vehicleColor.blue * ratio + speedColor.blue * (1 - ratio),
-            1.0
-        );
+        return blendColorsUtil(vehicleColor, speedColor, ratio);
     }
 
     /**
@@ -1388,46 +1308,9 @@ class GeoVisualization {
         console.log('All data cleared');
     }
 
-    /**
-     * Load available dates for speed analysis
-     */
-    async loadSpeedAvailableDates() {
-        try {
-            const roadId = document.getElementById('speedRoadId').value;
-            const dateSelect = document.getElementById('speedDate');
-            
-            this.showSpeedStatus('Loading available dates...', 'info');
-            
-            const response = await fetch(`${this.apiBaseUrl}/vehicle/dates?road_id=${roadId}`);
-            
-            if (!response.ok) {
-                throw new Error(`HTTP error: ${response.status}`);
-            }
-            
-            const result = await response.json();
-            
-            if (result.status === 'success') {
-                // Clear existing options
-                dateSelect.innerHTML = '<option value="" selected>Select Date</option>';
-                
-                // Add new date options
-                result.dates.forEach(date => {
-                    const option = document.createElement('option');
-                    option.value = date;
-                    option.textContent = date;
-                    dateSelect.appendChild(option);
-                });
-                
-                this.showSpeedStatus(`Loaded ${result.total_dates} available dates`, 'success');
-            } else {
-                throw new Error(result.message || 'Failed to load dates');
-            }
-            
-        } catch (error) {
-            console.error('Error loading speed analysis dates:', error);
-            this.showSpeedStatus(`Failed to load dates: ${error.message}`, 'error');
-        }
-    }
+    
+
+    
 
     
 
@@ -1447,7 +1330,9 @@ class GeoVisualization {
             
             timeRangeInfo.textContent = 'Loading time range...';
             
-            const response = await fetch(`${this.apiBaseUrl}/speed/time-range?road_id=${roadId}&date=${date}`);
+            const dsSel = document.getElementById('dataSource');
+            const ds = (dsSel && dsSel.value) || 'merged';
+            const response = await fetch(`${this.apiBaseUrl}/speed/time-range?road_id=${roadId}&date=${date}&source=${encodeURIComponent(ds)}`);
             const result = await response.json();
             
             if (result.status === 'success') {
@@ -1765,484 +1650,14 @@ class GeoVisualization {
     }
 
     /**
-     * Draw speed chart using canvas
+     * Draw speed chart using canvas (delegated to chart module)
      */
     drawSpeedChart(speedPoints, trafficLightData, mode = 'single', vehicleIds = []) {
-        const canvasContainer = document.getElementById('speedChartCanvas');
-        
-        if (!canvasContainer) {
-            console.error('Canvas container not found');
-            return;
-        }
-        
-        // Check if we have data points
-        if (!speedPoints || speedPoints.length === 0) {
-            console.error('No speed data points to draw');
-            canvasContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">No speed data available to display</div>';
-            return;
-        }
-        
-        console.log(`Drawing chart with ${speedPoints.length} speed points`);
-        
-        // Create canvas element
-        const canvas = document.createElement('canvas');
-        
-        // Set canvas size, use fixed size if container size is 0
-        const containerWidth = canvasContainer.offsetWidth || 800;
-        const containerHeight = canvasContainer.offsetHeight || 400;
-        
-        canvas.width = containerWidth;
-        canvas.height = containerHeight;
-        
-        console.log(`Canvas size: ${canvas.width} x ${canvas.height}`);
-        
-        canvasContainer.innerHTML = '';
-        canvasContainer.appendChild(canvas);
-        
-        const ctx = canvas.getContext('2d');
-        const padding = 60;
-        const chartWidth = canvas.width - 2 * padding;
-        const chartHeight = canvas.height - 2 * padding;
-        
-        // Prepare data - use collectiontime (Unix timestamp) for X-axis
-        const collectionTimes = speedPoints.map(p => p.collectiontime);
         const metricKey = this.currentSelectedMetric || (this.currentSpeedData && this.currentSpeedData.metric) || 'speed';
-        const values = speedPoints.map(p => {
-            const n = Number(p[metricKey]);
-            return Number.isFinite(n) ? n : 0;
-        });
-        
-        // Check time data
-        console.log('First few collection times:');
-        speedPoints.slice(0, 3).forEach((p, i) => {
-            const date = new Date(p.collectiontime);
-            console.log(`  ${p.collectiontime} -> ${date} (${p.time_stamp})`);
-        });
-        
-        const minTime = Math.min(...collectionTimes);
-        const maxTime = Math.max(...collectionTimes);
-        
-        // Create time conversion function
-        const timeToX = (timestamp) => {
-            if (maxTime === minTime) return padding + chartWidth / 2;
-            return padding + ((timestamp - minTime) / (maxTime - minTime)) * chartWidth;
-        };
-        
-        const minVal = Math.min(...values);
-        const maxVal = Math.max(...values);
-        
-        console.log(`Time range: ${new Date(minTime)} - ${new Date(maxTime)}`);
-        
-        // Add some padding to Y range
-        const valuePadding = Math.max(1, (maxVal - minVal) * 0.1);
-        const valueMin = minVal - valuePadding;
-        const valueMax = maxVal + valuePadding;
-        
-        console.log(`Adjusted ${metricKey} range: ${valueMin} - ${valueMax}`);
-        
-        // Helper functions
-        const valueToY = (val) => {
-            if (valueMax === valueMin) return padding + chartHeight / 2;
-            const normalized = (val - valueMin) / (valueMax - valueMin);
-            return padding + chartHeight * (1 - normalized);
-        };
-        
-        // Clear canvas
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        
-        // Draw traffic light periods in background
-        if (trafficLightData && trafficLightData.traffic_lights.length > 0) {
-            ctx.fillStyle = 'rgba(255, 0, 0, 0.1)';
-            trafficLightData.traffic_lights.forEach(light => {
-                const startTime = new Date(light.start_time);
-                const endTime = new Date(light.end_time);
-                
-                // Only draw if the times are valid
-                if (!isNaN(startTime.getTime()) && !isNaN(endTime.getTime())) {
-                    const startTimestamp = startTime.getTime();
-                    const endTimestamp = endTime.getTime();
-                    
-                    const x1 = timeToX(startTimestamp);
-                    const x2 = timeToX(endTimestamp);
-                    
-                    if (!isNaN(x1) && !isNaN(x2)) {
-                        ctx.fillRect(x1, padding, x2 - x1, chartHeight);
-                    }
-                }
-            });
-        }
-        
-        // Draw grid lines and labels
-        ctx.strokeStyle = '#e0e0e0';
-        ctx.lineWidth = 1;
-        ctx.font = '12px Arial';
-        ctx.fillStyle = '#666666';
-        
-        // Y-axis grid (metric)
-        const speedSteps = 5;
-        for (let i = 0; i <= speedSteps; i++) {
-            const val = valueMin + (valueMax - valueMin) * (i / speedSteps);
-            const y = valueToY(val);
-            
-            ctx.beginPath();
-            ctx.moveTo(padding, y);
-            ctx.lineTo(padding + chartWidth, y);
-            ctx.stroke();
-            
-            ctx.fillText(val.toFixed(1), 5, y + 4);
-        }
-        
-        // X-axis grid (time)
-        const timeSteps = 6;
-        for (let i = 0; i <= timeSteps; i++) {
-            const timestamp = minTime + (maxTime - minTime) * (i / timeSteps);
-            const x = timeToX(timestamp);
-            const time = new Date(timestamp);
-            const timeStr = time.toLocaleTimeString('en-US', { 
-                hour12: false, 
-                hour: '2-digit', 
-                minute: '2-digit' 
-            });
-            
-            ctx.beginPath();
-            ctx.moveTo(x, padding);
-            ctx.lineTo(x, padding + chartHeight);
-            ctx.stroke();
-            
-            ctx.save();
-            ctx.translate(x, canvas.height - 10);
-            ctx.rotate(-Math.PI / 6);
-            ctx.fillText(timeStr, -20, 0);
-            ctx.restore();
-        }
-        
-        // Group data by vehicle ID for multi-vehicle support
-        const vehicleGroups = {};
-        if (mode === 'single') {
-            // Single vehicle mode - use all data as one group
-            const vehicleId = speedPoints[0]?.vehicle_id || 1;
-            vehicleGroups[vehicleId] = speedPoints;
-        } else {
-            // Time range mode - group by vehicle_id
-            speedPoints.forEach(point => {
-                if (!vehicleGroups[point.vehicle_id]) {
-                    vehicleGroups[point.vehicle_id] = [];
-                }
-                vehicleGroups[point.vehicle_id].push(point);
-            });
-        }
-        
-        const vehicleColors = this.getVehicleColors(Object.keys(vehicleGroups).length);
-        let colorIndex = 0;
-        
-        // Draw speed lines for each vehicle
-        Object.keys(vehicleGroups).forEach(vehicleId => {
-            const vehicleData = vehicleGroups[vehicleId];
-            const vehicleColor = mode === 'single' ? 
-                { red: 0.30, green: 0.69, blue: 0.31 } : // #4CAF50 for single mode
-                vehicleColors[colorIndex];
-            
-            const colorStr = `rgb(${Math.floor(vehicleColor.red * 255)}, ${Math.floor(vehicleColor.green * 255)}, ${Math.floor(vehicleColor.blue * 255)})`;
-            
-            // Sort vehicle data by time
-            vehicleData.sort((a, b) => a.collectiontime - b.collectiontime);
-            
-            // Draw line for this vehicle
-            ctx.strokeStyle = colorStr;
-            ctx.lineWidth = mode === 'single' ? 2 : 1.5;
-            ctx.beginPath();
-            
-            let validPoints = 0;
-            vehicleData.forEach((point, index) => {
-                const x = timeToX(point.collectiontime);
-                const y = valueToY(point[metricKey]);
-                
-                // Debug: log first few points of first vehicle
-                if (colorIndex === 0 && index < 3) {
-                    console.log(`Vehicle ${vehicleId} Point ${index}: time=${point.time_stamp}, ${metricKey}=${point[metricKey]}, collectiontime=${point.collectiontime}, x=${x}, y=${y}`);
-                }
-                
-                // Check if coordinates are valid
-                if (isNaN(x) || isNaN(y)) {
-                    console.warn(`Invalid coordinates for vehicle ${vehicleId} point ${index}: x=${x}, y=${y}`);
-                    return;
-                }
-                
-                // Clamp coordinates to canvas bounds
-                const clampedX = Math.max(padding, Math.min(canvas.width - padding, x));
-                const clampedY = Math.max(padding, Math.min(canvas.height - padding, y));
-                
-                validPoints++;
-                if (validPoints === 1) {
-                    ctx.moveTo(clampedX, clampedY);
-                } else {
-                    ctx.lineTo(clampedX, clampedY);
-                }
-            });
-            
-            console.log(`Drawing line for vehicle ${vehicleId} with ${validPoints} valid points out of ${vehicleData.length} total points`);
-            ctx.stroke();
-            
-            // Draw speed points for this vehicle
-            ctx.fillStyle = colorStr;
-            vehicleData.forEach((point) => {
-                const x = timeToX(point.collectiontime);
-                const y = valueToY(point[metricKey]);
-                
-                // Check if coordinates are valid
-                if (isNaN(x) || isNaN(y)) {
-                    return;
-                }
-                
-                // Clamp coordinates to canvas bounds
-                const clampedX = Math.max(padding, Math.min(canvas.width - padding, x));
-                const clampedY = Math.max(padding, Math.min(canvas.height - padding, y));
-                
-                ctx.beginPath();
-                ctx.arc(clampedX, clampedY, mode === 'single' ? 4 : 3, 0, 2 * Math.PI);
-                ctx.fill();
-            });
-            
-            colorIndex++;
-        });
-        
-        // Draw traffic light annotations
-        if (trafficLightData && trafficLightData.traffic_lights.length > 0) {
-            ctx.fillStyle = '#dc3545';
-            ctx.font = '10px Arial';
-            
-            trafficLightData.traffic_lights.forEach((light, index) => {
-                const startTime = new Date(light.start_time);
-                
-                if (!isNaN(startTime.getTime())) {
-                    const x = timeToX(startTime.getTime());
-                    
-                    if (!isNaN(x)) {
-                        const y = padding + 20 + (index % 3) * 15;
-                        ctx.fillText(`${light.phase_id}`, x, y);
-                    }
-                }
-            });
-        }
-        
-        // Draw axis labels
-        ctx.fillStyle = '#333333';
-        ctx.font = '14px Arial';
-        ctx.fillText(`${metricKey}`, 10, 30);
-        ctx.fillText('Time', canvas.width / 2 - 20, canvas.height - 10);
-        
-        // Draw border
-        ctx.strokeStyle = '#cccccc';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(padding, padding, chartWidth, chartHeight);
+        return drawSpeedChartExt(speedPoints, trafficLightData, mode, vehicleIds, metricKey);
     }
 
-    /**
-     * Handle smoothing comparison status display
-     */
-    showSmoothingStatus(message, type = 'info') {
-        const statusDiv = document.getElementById('smoothingStatus');
-        const statusText = document.getElementById('smoothingStatusText');
-
-        if (!statusDiv || !statusText) return;
-
-        statusText.textContent = message;
-        statusDiv.className = `status ${type}`;
-        statusDiv.style.display = 'block';
-
-        if (type === 'error' || type === 'warning') {
-            statusDiv.dataset.locked = 'true';
-        } else {
-            statusDiv.dataset.locked = 'false';
-        }
-
-        if (type === 'success' || type === 'info') {
-            setTimeout(() => {
-                if (!statusDiv.dataset.locked || statusDiv.dataset.locked !== 'true') {
-                    statusDiv.style.display = 'none';
-                }
-            }, 3000);
-        }
-    }
-
-    /**
-     * Load raw vs smoothed trajectories for comparison
-     */
-    async loadSmoothingComparison() {
-        try {
-            const roadId = document.getElementById('smoothingRoadId').value;
-            const date = document.getElementById('smoothingDate').value;
-            const vehicleId = document.getElementById('smoothingVehicleId').value;
-            const segIdInput = document.getElementById('smoothingSegId').value;
-
-            if (!vehicleId) {
-                this.showSmoothingStatus('Please enter a vehicle ID', 'warning');
-                return;
-            }
-
-            if (!date) {
-                this.showSmoothingStatus('Please select a date', 'warning');
-                return;
-            }
-
-            const params = new URLSearchParams({
-                road_id: roadId,
-                vehicle_id: vehicleId,
-                date
-            });
-
-            if (segIdInput) {
-                params.append('seg_id', segIdInput);
-            }
-
-            const url = `${this.apiBaseUrl}/trajectory/smoothing?${params.toString()}`;
-            this.showSmoothingStatus('Loading trajectories...', 'info');
-
-            const resp = await fetch(url);
-            const data = await resp.json();
-
-            if (data.status !== 'success') {
-                const message = data.message || 'Failed to load smoothing data';
-                this.showSmoothingStatus(message, 'error');
-                return;
-            }
-
-            this.renderSmoothingComparison(data);
-            this.currentSmoothingData = data;
-            this.showSmoothingStatus('Loaded trajectories for comparison', 'success');
-
-        } catch (error) {
-            console.error('Error loading smoothing comparison:', error);
-            this.showSmoothingStatus(`Error: ${error.message}`, 'error');
-        }
-    }
-
-    /**
-     * Render comparison trajectories on map
-     */
-    renderSmoothingComparison(data) {
-        if (!this.smoothingDataSource || !this.viewer) return;
-
-        this.smoothingDataSource.entities.removeAll();
-
-        const rawPoints = data.raw_points || [];
-        const smoothPoints = data.smoothed_points || [];
-
-        const rawPositions = rawPoints
-            .filter(p => Number.isFinite(p.longitude) && Number.isFinite(p.latitude))
-            .map(p => Cesium.Cartesian3.fromDegrees(p.longitude, p.latitude));
-
-        const smoothPositions = smoothPoints
-            .filter(p => Number.isFinite(p.longitude) && Number.isFinite(p.latitude))
-            .map(p => Cesium.Cartesian3.fromDegrees(p.longitude, p.latitude));
-
-        if (rawPositions.length > 1) {
-            this.smoothingDataSource.entities.add({
-                id: 'raw_trajectory',
-                polyline: {
-                    positions: rawPositions,
-                    width: 4,
-                    material: Cesium.Color.RED.withAlpha(0.8),
-                    clampToGround: true
-                },
-                description: 'Raw trajectory from split data'
-            });
-        }
-
-        if (smoothPositions.length > 1) {
-            this.smoothingDataSource.entities.add({
-                id: 'smooth_trajectory',
-                polyline: {
-                    positions: smoothPositions,
-                    width: 4,
-                    material: Cesium.Color.CYAN.withAlpha(0.8),
-                    clampToGround: true
-                },
-                description: 'Smoothed trajectory derived from smoother CSV'
-            });
-        }
-
-        if (rawPositions.length) {
-            this.smoothingDataSource.entities.add({
-                id: 'raw_start_point',
-                position: rawPositions[0],
-                point: {
-                    pixelSize: 10,
-                    color: Cesium.Color.RED,
-                    outlineColor: Cesium.Color.WHITE,
-                    outlineWidth: 2
-                },
-                label: {
-                    text: 'Raw Start',
-                    font: '12px sans-serif',
-                    fillColor: Cesium.Color.WHITE,
-                    outlineColor: Cesium.Color.BLACK,
-                    outlineWidth: 2,
-                    style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-                    verticalOrigin: Cesium.VerticalOrigin.TOP,
-                    pixelOffset: new Cesium.Cartesian2(0, -16)
-                }
-            });
-        }
-
-        if (smoothPositions.length) {
-            this.smoothingDataSource.entities.add({
-                id: 'smooth_start_point',
-                position: smoothPositions[0],
-                point: {
-                    pixelSize: 10,
-                    color: Cesium.Color.CYAN,
-                    outlineColor: Cesium.Color.WHITE,
-                    outlineWidth: 2
-                },
-                label: {
-                    text: 'Smoothed Start',
-                    font: '12px sans-serif',
-                    fillColor: Cesium.Color.WHITE,
-                    outlineColor: Cesium.Color.BLACK,
-                    outlineWidth: 2,
-                    style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-                    verticalOrigin: Cesium.VerticalOrigin.TOP,
-                    pixelOffset: new Cesium.Cartesian2(0, -16)
-                }
-            });
-        }
-
-        if (rawPositions.length || smoothPositions.length) {
-            this.viewer.flyTo(this.smoothingDataSource);
-        }
-
-        const rawCountEl = document.getElementById('smoothingRawCount');
-        const smoothCountEl = document.getElementById('smoothingSmoothedCount');
-        if (rawCountEl) {
-            rawCountEl.textContent = `Raw Points: ${rawPoints.length}`;
-        }
-        if (smoothCountEl) {
-            smoothCountEl.textContent = `Smoothed Points: ${smoothPoints.length}`;
-        }
-    }
-
-    /**
-     * Clear smoothing comparison visualization
-     */
-    clearSmoothingComparison() {
-        if (this.smoothingDataSource) {
-            this.smoothingDataSource.entities.removeAll();
-        }
-        this.currentSmoothingData = null;
-
-        const rawCountEl = document.getElementById('smoothingRawCount');
-        const smoothCountEl = document.getElementById('smoothingSmoothedCount');
-        if (rawCountEl) rawCountEl.textContent = 'Raw Points: --';
-        if (smoothCountEl) smoothCountEl.textContent = 'Smoothed Points: --';
-
-        const statusDiv = document.getElementById('smoothingStatus');
-        if (statusDiv) {
-            statusDiv.style.display = 'none';
-            statusDiv.dataset.locked = 'false';
-        }
-    }
+    
 
     /**
      * Show status message in speed analysis panel
@@ -2313,149 +1728,16 @@ class GeoVisualization {
     }
 
     /**
-     * Display topology on the map
+     * Display topology on the map (delegated to overlay module)
      */
     displayTopology(geojson, summary) {
-        // Clear existing topology
-        this.topologyDataSource.entities.removeAll();
-        
-        if (!geojson || !geojson.features) {
-            console.warn('No features in topology data');
-            return;
-        }
-        
-        console.log(`Displaying ${geojson.features.length} topology features`);
-        
-        geojson.features.forEach(feature => {
-            const props = feature.properties || {};
-            const geom = feature.geometry;
-            
-            if (props.kind === 'center') {
-                // Display intersection center as a large point
-                const [lon, lat] = geom.coordinates;
-                this.topologyDataSource.entities.add({
-                    position: Cesium.Cartesian3.fromDegrees(lon, lat),
-                    point: {
-                        pixelSize: 15,
-                        color: Cesium.Color.RED,
-                        outlineColor: Cesium.Color.WHITE,
-                        outlineWidth: 2
-                    },
-                    label: {
-                        text: 'Intersection Center',
-                        font: '14px sans-serif',
-                        fillColor: Cesium.Color.WHITE,
-                        outlineColor: Cesium.Color.BLACK,
-                        outlineWidth: 2,
-                        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-                        verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-                        pixelOffset: new Cesium.Cartesian2(0, -20)
-                    },
-                    description: `<h3>Intersection Center</h3><p>Coordinates: ${lon.toFixed(6)}, ${lat.toFixed(6)}</p>`
-                });
-            } else if (props.kind === 'arm_node') {
-                // Display arm nodes
-                const [lon, lat] = geom.coordinates;
-                const armId = props.id;
-                const angleRad = props.angle_rad;
-                const angleDeg = (angleRad * 180 / Math.PI).toFixed(1);
-                
-                this.topologyDataSource.entities.add({
-                    position: Cesium.Cartesian3.fromDegrees(lon, lat),
-                    point: {
-                        pixelSize: 12,
-                        color: Cesium.Color.BLUE,
-                        outlineColor: Cesium.Color.WHITE,
-                        outlineWidth: 2
-                    },
-                    label: {
-                        text: `Arm ${armId}`,
-                        font: '12px sans-serif',
-                        fillColor: Cesium.Color.YELLOW,
-                        outlineColor: Cesium.Color.BLACK,
-                        outlineWidth: 2,
-                        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-                        verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-                        pixelOffset: new Cesium.Cartesian2(0, -15)
-                    },
-                    description: `<h3>Arm ${armId}</h3><p>Angle: ${angleDeg}°</p><p>Coordinates: ${lon.toFixed(6)}, ${lat.toFixed(6)}</p>`
-                });
-            } else if (props.kind === 'movement') {
-                // Display movement edges as polylines
-                const coords = geom.coordinates;
-                const positions = coords.map(coord => Cesium.Cartesian3.fromDegrees(coord[0], coord[1]));
-                const weight = props.weight || 1;
-                
-                // Color based on weight (traffic volume)
-                let color = Cesium.Color.GREEN;
-                if (weight > 15) {
-                    color = Cesium.Color.RED;
-                } else if (weight > 10) {
-                    color = Cesium.Color.ORANGE;
-                } else if (weight > 5) {
-                    color = Cesium.Color.YELLOW;
-                }
-                
-                this.topologyDataSource.entities.add({
-                    polyline: {
-                        positions: positions,
-                        width: Math.min(2 + weight * 0.5, 10),
-                        material: color.withAlpha(0.8),
-                        clampToGround: true
-                    },
-                    description: `<h3>Movement Edge</h3><p>From Arm ${props.u} to Arm ${props.v}</p><p>Traffic Volume: ${weight} vehicles</p>`
-                });
-                
-                // Add arrow at the end to show direction
-                if (coords.length >= 2) {
-                    const lastCoord = coords[coords.length - 1];
-                    const secondLastCoord = coords[coords.length - 2];
-                    
-                    // Calculate arrow direction
-                    const dx = lastCoord[0] - secondLastCoord[0];
-                    const dy = lastCoord[1] - secondLastCoord[1];
-                    const heading = Math.atan2(dx, dy);
-                    
-                    this.topologyDataSource.entities.add({
-                        position: Cesium.Cartesian3.fromDegrees(lastCoord[0], lastCoord[1]),
-                        billboard: {
-                            image: this.createArrowCanvas(color),
-                            scale: 0.5,
-                            rotation: -heading,
-                            alignedAxis: Cesium.Cartesian3.UNIT_Z
-                        }
-                    });
-                }
-            }
-        });
-        
-        console.log('Topology display completed');
+        return displayTopologyExt(geojson, summary, this.topologyDataSource, this.viewer);
     }
 
     /**
      * Create arrow canvas for direction indication
      */
-    createArrowCanvas(color) {
-        const canvas = document.createElement('canvas');
-        canvas.width = 32;
-        canvas.height = 32;
-        const ctx = canvas.getContext('2d');
-        
-        // Draw arrow
-        ctx.fillStyle = color.toCssColorString();
-        ctx.beginPath();
-        ctx.moveTo(16, 4);
-        ctx.lineTo(28, 16);
-        ctx.lineTo(20, 16);
-        ctx.lineTo(20, 28);
-        ctx.lineTo(12, 28);
-        ctx.lineTo(12, 16);
-        ctx.lineTo(4, 16);
-        ctx.closePath();
-        ctx.fill();
-        
-        return canvas;
-    }
+    // Removed: now provided by overlays/topology utilities
 
     /**
      * Update topology info display
