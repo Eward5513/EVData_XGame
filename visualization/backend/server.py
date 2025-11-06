@@ -307,7 +307,11 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             elif path == '/api/intersection/inference':
                 self._handle_intersection_inference(params)
             elif path == '/api/intersection/centerlines':
-                self._handle_intersection_centerlines()
+                self._handle_intersection_centerlines(params)
+            elif path == '/api/stopline/west':
+                self._handle_stopline_west(params)
+            elif path == '/api/stopline/east':
+                self._handle_stopline_east(params)
             elif path == '/api/excluded/data':
                 self._handle_excluded_data(params)
             elif path == '/api/direction/segments':
@@ -1261,24 +1265,47 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 'message': f'Error loading inference: {str(e)}'
             }, 500)
 
-    def _handle_intersection_centerlines(self):
-        """Serve all intersections' centerlines from data/intersection.json.
-        Expects the file to contain a mapping of road_id -> { center, lower_lane, upper_lane } with
-        each value being an array of [lon, lat] pairs.
+    def _handle_intersection_centerlines(self, params):
+        """Serve intersections' centerlines from data/intersection_*.json.
+        Allows selecting file source via ?source=A|B and filtering to a single road via ?road_id=A0003.
+        Supported filenames:
+          - intersection_B.json (newest)
+          - intersection_A.json (older/new format)
+          - intersection.json   (legacy)
         """
         try:
-            # Prefer data/intersection.json under repository root
-            inter_path = os.path.join(CSV_BASE_PATH, 'intersection.json')
-            # Fallback to repo root absolute if not found under data
-            if not os.path.exists(inter_path):
-                alt_json = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'intersection.json'))
-                if os.path.exists(alt_json):
-                    inter_path = alt_json
+            source_param = (params.get('source') or '').strip().upper()
+            road_id = params.get('road_id')
 
-            if not os.path.exists(inter_path):
+            # Candidate filenames based on requested source
+            if source_param == 'A':
+                candidates = ['intersection_A.json']
+            elif source_param == 'B':
+                candidates = ['intersection_B.json']
+            else:
+                # Default priority order
+                candidates = ['intersection_B.json', 'intersection_A.json', 'intersection.json']
+
+            inter_path = None
+            inter_source = None
+            # Resolve first existing candidate under data/ or repo-root/data/
+            for name in candidates:
+                p1 = os.path.join(CSV_BASE_PATH, name)
+                if os.path.exists(p1):
+                    inter_path = p1
+                    inter_source = name
+                    break
+                p2 = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'data', name))
+                if os.path.exists(p2):
+                    inter_path = p2
+                    inter_source = name
+                    break
+
+            if not inter_path:
+                tried = ', '.join(candidates)
                 self._send_json_response({
                     'status': 'error',
-                    'message': f'Centerlines file not found: {inter_path}'
+                    'message': f'Centerlines file not found (tried {tried})'
                 }, 404)
                 return
 
@@ -1292,13 +1319,25 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 }, 400)
                 return
 
+            # Optionally filter to a single road
+            if road_id:
+                if road_id in payload:
+                    payload = { road_id: payload[road_id] }
+                else:
+                    self._send_json_response({
+                        'status': 'error',
+                        'message': f'Road {road_id} not found in {inter_source}'
+                    }, 404)
+                    return
+
             roads = list(payload.keys())
             self._send_json_response({
                 'status': 'success',
                 'centerlines': payload,
                 'roads': roads,
                 'total': len(roads),
-                'file_path': inter_path
+                'file_path': inter_path,
+                'source_file': inter_source
             })
         except json.JSONDecodeError as e:
             self._send_json_response({
@@ -1311,6 +1350,119 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 'message': f'Error loading centerlines: {str(e)}'
             }, 500)
 
+    def _handle_stopline_west(self, params):
+        """Serve west-approach stopline geometry from data/west_stopline.json.
+        Returns an object keyed by road_id with fields including stopline_segment.
+        """
+        try:
+            road_id = params.get('road_id')
+            stopline_path = os.path.join(CSV_BASE_PATH, 'west_stopline.json')
+            if not os.path.exists(stopline_path):
+                # Fallback to repo-root/data
+                alt_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'stopline_west.json'))
+                if os.path.exists(alt_path):
+                    stopline_path = alt_path
+
+            if not os.path.exists(stopline_path):
+                self._send_json_response({
+                    'status': 'error',
+                    'message': 'west_stopline.json not found'
+                }, 404)
+                return
+
+            with open(stopline_path, 'r', encoding='utf-8') as f:
+                payload = json.load(f)
+
+            if not isinstance(payload, dict):
+                self._send_json_response({
+                    'status': 'error',
+                    'message': 'Invalid west_stopline.json format (expected object keyed by road_id)'
+                }, 400)
+                return
+
+            if road_id:
+                if road_id in payload:
+                    payload = { road_id: payload[road_id] }
+                else:
+                    self._send_json_response({
+                        'status': 'error',
+                        'message': f'Road {road_id} not found in west_stopline.json'
+                    }, 404)
+                    return
+
+            self._send_json_response({
+                'status': 'success',
+                'stoplines': payload,
+                'roads': list(payload.keys()),
+                'file_path': stopline_path
+            })
+        except json.JSONDecodeError as e:
+            self._send_json_response({
+                'status': 'error',
+                'message': f'Invalid JSON in west_stopline.json: {str(e)}'
+            }, 500)
+        except Exception as e:
+            self._send_json_response({
+                'status': 'error',
+                'message': str(e)
+            }, 500)
+
+    def _handle_stopline_east(self, params):
+        """Serve east-approach stopline geometry from data/east_stopline.json.
+        Returns an object keyed by road_id with fields including stopline_segment.
+        """
+        try:
+            road_id = params.get('road_id')
+            stopline_path = os.path.join(CSV_BASE_PATH, 'east_stopline.json')
+            if not os.path.exists(stopline_path):
+                # Fallback to repo-root/data
+                alt_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'stopline_east.json'))
+                if os.path.exists(alt_path):
+                    stopline_path = alt_path
+
+            if not os.path.exists(stopline_path):
+                self._send_json_response({
+                    'status': 'error',
+                    'message': 'east_stopline.json not found'
+                }, 404)
+                return
+
+            with open(stopline_path, 'r', encoding='utf-8') as f:
+                payload = json.load(f)
+
+            if not isinstance(payload, dict):
+                self._send_json_response({
+                    'status': 'error',
+                    'message': 'Invalid east_stopline.json format (expected object keyed by road_id)'
+                }, 400)
+                return
+
+            if road_id:
+                if road_id in payload:
+                    payload = { road_id: payload[road_id] }
+                else:
+                    self._send_json_response({
+                        'status': 'error',
+                        'message': f'Road {road_id} not found in east_stopline.json'
+                    }, 404)
+                    return
+
+            self._send_json_response({
+                'status': 'success',
+                'stoplines': payload,
+                'roads': list(payload.keys()),
+                'file_path': stopline_path
+            })
+        except json.JSONDecodeError as e:
+            self._send_json_response({
+                'status': 'error',
+                'message': f'Invalid JSON in east_stopline.json: {str(e)}'
+            }, 500)
+        except Exception as e:
+            self._send_json_response({
+                'status': 'error',
+                'message': str(e)
+            }, 500)
     def _handle_raw_dates(self, params):
         """Return available dates from the raw CSV (<road_id>.csv)."""
         try:

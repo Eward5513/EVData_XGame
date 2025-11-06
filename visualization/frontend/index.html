@@ -438,8 +438,23 @@
             </div>
             <div class="panel-content">
                 <div class="panel-section">
-                    <button id="loadInferenceBtn" class="btn btn-primary">Load Intersection Overlays</button>
-                    <button id="clearInferenceBtn" class="btn btn-secondary">Clear Overlays</button>
+                    <label for="inferRoadId">Road Intersection:</label>
+                    <select id="inferRoadId">
+                        <option value="A0003" selected>A0003</option>
+                        <option value="A0008">A0008</option>
+                    </select>
+                </div>
+
+                <div class="panel-section">
+                    <label for="inferOrientation">Direction:</label>
+                    <select id="inferOrientation">
+                        <option value="NS" selected>南北向 (B)</option>
+                        <option value="EW">东西向 (A)</option>
+                    </select>
+                </div>
+                <div class="panel-section">
+                    <button id="loadInferenceBtn" class="btn btn-primary">Infer Road</button>
+                    <button id="clearInferenceBtn" class="btn btn-secondary">Clear Road</button>
                 </div>
 
                 <div class="panel-section">

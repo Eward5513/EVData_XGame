@@ -5,7 +5,7 @@ import { getSpeedColor as getSpeedColorUtil, getVehicleColors as getVehicleColor
 import { offsetLonLat } from './utils/geo.js';
 import { drawAnalysisCenterOverlay as drawCenterOverlay } from './overlays/analysisOverlay.js';
 import { drawIntersectionInference as drawInference, drawIntersectionCenterlines as drawCenterlines } from './overlays/inference.js';
-import { displayTopology as displayTopologyExt } from './overlays/topology.js';
+import { drawWestStoplines as drawWestStoplinesExt, drawEastStoplines as drawEastStoplinesExt } from './overlays/topology.js';
 import { drawSpeedChart as drawSpeedChartExt } from './charts/speedChart.js';
 import { drawGenericMetricChart as drawGenericMetricChartExt } from './charts/genericChart.js';
 import { renderVehicleTrajectories } from './renderers/vehicle.js';
@@ -22,7 +22,6 @@ class GeoVisualization {
         this.currentTrafficLightData = null;
         this.currentSpeedData = null;
         this.currentSpeedTrafficLights = null;
-        this.currentTopologyData = null;
         this.apiBaseUrl = API_BASE_URL;
         this.currentSelectedMetric = 'speed';
         this.currentSelectedSegId = null;
@@ -30,6 +29,7 @@ class GeoVisualization {
         this.currentExcludedData = [];
         this.allDates = [];
         this.allRoadIds = [];
+        this.inferenceLoadSeq = 0;
         
 		// Analysis centers and radius (A0003 and A0008 should both be displayed)
 		this.analysisCenters = ANALYSIS_CENTERS;
@@ -165,12 +165,19 @@ class GeoVisualization {
      */
     async loadIntersectionInferenceOverlays() {
         try {
-            // Clear previous overlays
-            if (this.topologyDataSource) {
-                this.topologyDataSource.entities.removeAll();
-            }
-            // Load all intersections' centerlines from server
-            const resp = await fetch(`${this.apiBaseUrl}/intersection/centerlines`);
+            // Determine selected road and orientation -> source file (A or B)
+            const inferRoadSel = document.getElementById('inferRoadId');
+            const inferOrientSel = document.getElementById('inferOrientation');
+            const selectedRoadId = inferRoadSel ? (inferRoadSel.value || '') : '';
+            const selectedOrient = inferOrientSel ? (inferOrientSel.value || 'NS') : 'NS';
+            // Map orientation to source file: NS -> B, EW -> A (per user requirement)
+            const source = (selectedOrient === 'NS') ? 'B' : 'A';
+
+            // Load intersections' centerlines from server with filters
+            const params = new URLSearchParams();
+            if (source) params.set('source', source);
+            if (selectedRoadId) params.set('road_id', selectedRoadId);
+            const resp = await fetch(`${this.apiBaseUrl}/intersection/centerlines?${params.toString()}`);
             const result = await resp.json();
             if (!(result && result.status === 'success' && result.centerlines)) {
                 throw new Error(result && result.message ? result.message : 'Failed to load centerlines');
@@ -179,16 +186,22 @@ class GeoVisualization {
             const centerlines = result.centerlines || {};
             const roads = Object.keys(centerlines);
 
+            // Bump load sequence to ensure unique entity ids per load
+            this.inferenceLoadSeq = (this.inferenceLoadSeq || 0) + 1;
+            const variantTag = `${source || 'AUTO'}_${this.inferenceLoadSeq}`;
+
             // Draw center, lower and upper lane centerlines for each road
             roads.forEach((rid) => {
                 try {
                     const lines = centerlines[rid];
                     if (!lines) return;
-                    drawCenterlines(this.topologyDataSource, rid, lines);
+                    drawCenterlines(this.topologyDataSource, rid, lines, variantTag);
                 } catch (e) {
                     console.warn(`Failed to render centerlines for ${rid}:`, e);
                 }
             });
+            // Return info for UI status
+            return { roadsCount: roads.length, sourceFile: (result && (result.source_file || result.file_path)) || '' };
         } catch (e) {
             console.error('Error loading intersection overlays:', e);
         }
@@ -244,9 +257,7 @@ class GeoVisualization {
         const speedMetricSelect = document.getElementById('speedMetric');
         const speedSegIdInput = document.getElementById('speedSegId');
         
-        // Topology elements (panel removed) - guard for null
-        const loadTopologyBtn = document.getElementById('loadTopologyBtn');
-        const clearTopologyBtn = document.getElementById('clearTopologyBtn');
+        // Topology panel removed
 
         // Intersection overlay (inference) elements
         const loadInferenceBtn = document.getElementById('loadInferenceBtn');
@@ -361,17 +372,7 @@ class GeoVisualization {
             });
         }
 
-        // Topology event listeners (panel removed)
-        if (loadTopologyBtn) {
-            loadTopologyBtn.addEventListener('click', () => {
-                this.loadIntersectionTopology();
-            });
-        }
-        if (clearTopologyBtn) {
-            clearTopologyBtn.addEventListener('click', () => {
-                this.clearTopology();
-            });
-        }
+        // Topology panel removed
 
         if (loadInferenceBtn) {
             loadInferenceBtn.addEventListener('click', async () => {
@@ -379,8 +380,48 @@ class GeoVisualization {
                     const status = document.getElementById('inferenceStatus');
                     const text = document.getElementById('inferenceStatusText');
                     if (status && text) { status.style.display = 'block'; text.textContent = 'Loading overlays...'; }
-                    await this.loadIntersectionInferenceOverlays();
-                    if (status && text) { text.textContent = 'Overlays loaded'; setTimeout(()=> status.style.display='none', 2000); }
+                    const info = await this.loadIntersectionInferenceOverlays();
+                        // After overlays, also load west and east stoplines for the selected road
+                        try {
+                            const inferRoadSel = document.getElementById('inferRoadId');
+                            const selectedRoadId = inferRoadSel ? (inferRoadSel.value || '') : '';
+                            // West
+                            try {
+                                const urlW = selectedRoadId ? `${this.apiBaseUrl}/stopline/west?road_id=${encodeURIComponent(selectedRoadId)}`
+                                                            : `${this.apiBaseUrl}/stopline/west`;
+                                const respW = await fetch(urlW);
+                                if (respW.ok) {
+                                    const dataW = await respW.json();
+                                    if (dataW && dataW.status === 'success' && dataW.stoplines) {
+                                        drawWestStoplinesExt(this.topologyDataSource, dataW.stoplines);
+                                    }
+                                }
+                            } catch (e) {
+                                console.warn('Failed to load west stoplines on inference load:', e);
+                            }
+                            // East
+                            try {
+                                const urlE = selectedRoadId ? `${this.apiBaseUrl}/stopline/east?road_id=${encodeURIComponent(selectedRoadId)}`
+                                                            : `${this.apiBaseUrl}/stopline/east`;
+                                const respE = await fetch(urlE);
+                                if (respE.ok) {
+                                    const dataE = await respE.json();
+                                    if (dataE && dataE.status === 'success' && dataE.stoplines) {
+                                        drawEastStoplinesExt(this.topologyDataSource, dataE.stoplines);
+                                    }
+                                }
+                            } catch (e) {
+                                console.warn('Failed to load east stoplines on inference load:', e);
+                            }
+                        } catch (e) {
+                            console.warn('Stopline load wrapper failed:', e);
+                        }
+                    if (status && text) {
+                        const roadsMsg = info && typeof info.roadsCount === 'number' ? `${info.roadsCount} road(s)` : 'overlays';
+                        const srcMsg = info && info.sourceFile ? ` from ${info.sourceFile}` : '';
+                        text.textContent = `Loaded ${roadsMsg}${srcMsg}`;
+                        setTimeout(()=> status.style.display='none', 2000);
+                    }
                 } catch (e) {
                     const status = document.getElementById('inferenceStatus');
                     const text = document.getElementById('inferenceStatusText');
@@ -1690,129 +1731,7 @@ class GeoVisualization {
         }
     }
 
-    /**
-     * Load intersection topology from backend
-     */
-    async loadIntersectionTopology() {
-        const roadId = document.getElementById('topologyRoadId').value;
-        
-        this.showTopologyStatus('Loading intersection topology...', 'info');
-        
-        try {
-            const response = await fetch(`${this.apiBaseUrl}/topology/intersection?road_id=${roadId}`);
-            const data = await response.json();
-            
-            if (data.status === 'success') {
-                this.currentTopologyData = data;
-                this.displayTopology(data.topology, data.summary);
-                
-                const featureCount = data.topology.features ? data.topology.features.length : 0;
-                const armCount = data.summary ? data.summary.arms.length : 0;
-                const edgeCount = data.summary ? data.summary.edge_supports.length : 0;
-                
-                this.updateTopologyInfo(data.summary);
-                this.showTopologyStatus(
-                    `Successfully loaded topology: ${armCount} arms, ${edgeCount} movement edges, ${featureCount} features`,
-                    'success'
-                );
-                
-                // Fly to the intersection center if available
-                if (data.topology.features && data.topology.features.length > 0) {
-                    const centerFeature = data.topology.features.find(f => f.properties.kind === 'center');
-                    if (centerFeature && centerFeature.geometry.coordinates) {
-                        const [lon, lat] = centerFeature.geometry.coordinates;
-                        this.viewer.camera.flyTo({
-                            destination: Cesium.Cartesian3.fromDegrees(lon, lat, 500),
-                            duration: 2.0
-                        });
-                    }
-                }
-            } else {
-                this.showTopologyStatus(`Error: ${data.message}`, 'error');
-                if (data.hint) {
-                    console.log('Hint:', data.hint);
-                }
-            }
-        } catch (error) {
-            console.error('Error loading topology:', error);
-            this.showTopologyStatus('Failed to load topology data', 'error');
-        }
-    }
-
-    /**
-     * Display topology on the map (delegated to overlay module)
-     */
-    displayTopology(geojson, summary) {
-        return displayTopologyExt(geojson, summary, this.topologyDataSource, this.viewer);
-    }
-
-    /**
-     * Create arrow canvas for direction indication
-     */
-    // Removed: now provided by overlays/topology utilities
-
-    /**
-     * Update topology info display
-     */
-    updateTopologyInfo(summary) {
-        const infoDiv = document.getElementById('topologyInfo');
-        
-        if (!summary) {
-            infoDiv.innerHTML = '<div class="status-message">Topology loaded but no summary available.</div>';
-            return;
-        }
-        
-        let html = '<div class="topology-details">';
-        html += `<h4>Topology Summary</h4>`;
-        html += `<p><strong>Road Arms:</strong> ${summary.arms.length}</p>`;
-        html += `<ul>`;
-        summary.arms.forEach(arm => {
-            html += `<li>Arm ${arm.id}: ${arm.angle_deg.toFixed(1)}°</li>`;
-        });
-        html += `</ul>`;
-        html += `<p><strong>Movement Edges:</strong> ${summary.edge_supports.length}</p>`;
-        html += `<ul>`;
-        summary.edge_supports.forEach(edge => {
-            html += `<li>Arm ${edge.u} → Arm ${edge.v}: ${edge.weight} vehicles</li>`;
-        });
-        html += `</ul>`;
-        html += `<p><strong>Total Movements:</strong> ${summary.movements_total}</p>`;
-        html += '</div>';
-        
-        infoDiv.innerHTML = html;
-    }
-
-    /**
-     * Clear topology from map
-     */
-    clearTopology() {
-        this.topologyDataSource.entities.removeAll();
-        this.currentTopologyData = null;
-        
-        const infoDiv = document.getElementById('topologyInfo');
-        infoDiv.innerHTML = '<div class="status-message">Topology cleared. Click "Load Road Network" to display again.</div>';
-        
-        this.showTopologyStatus('Topology cleared', 'success');
-    }
-
-    /**
-     * Show status message in topology panel
-     */
-    showTopologyStatus(message, type = 'info') {
-        const statusDiv = document.getElementById('topologyStatus');
-        const statusText = document.getElementById('topologyStatusText');
-        
-        statusText.textContent = message;
-        statusDiv.className = `status ${type}`;
-        statusDiv.style.display = 'block';
-        
-        // Auto-hide after 3 seconds for success/info messages
-        if (type === 'success' || type === 'info') {
-            setTimeout(() => {
-                statusDiv.style.display = 'none';
-            }, 3000);
-        }
-    }
+    // Topology panel and legacy road network loader removed; infer panel is now the unified entry
 }
 
 // Initialize application when page loading is complete

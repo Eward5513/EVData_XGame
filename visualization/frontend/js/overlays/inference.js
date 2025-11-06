@@ -288,7 +288,7 @@ export function drawIntersectionInference(topologyDataSource, roadId, inference,
 
 
 
-export function drawIntersectionCenterlines(topologyDataSource, roadId, lines) {
+export function drawIntersectionCenterlines(topologyDataSource, roadId, lines, tag = null) {
     if (!topologyDataSource || !lines) return;
 
     const toPositions = (coords) => {
@@ -325,7 +325,7 @@ export function drawIntersectionCenterlines(topologyDataSource, roadId, lines) {
     // Center line as dashed
     if (centerPositions) {
         addPolyline(
-            `centerline_center_${roadId}`,
+            `centerline_center_${roadId}${tag ? '_' + tag : ''}`,
             centerPositions,
             6,
             new Cesium.PolylineDashMaterialProperty({
@@ -339,7 +339,7 @@ export function drawIntersectionCenterlines(topologyDataSource, roadId, lines) {
     // Lower/upper lanes as solid
     if (lowerPositions) {
         addPolyline(
-            `centerline_lower_${roadId}`,
+            `centerline_lower_${roadId}${tag ? '_' + tag : ''}`,
             lowerPositions,
             5,
             lowerColor,
@@ -349,7 +349,7 @@ export function drawIntersectionCenterlines(topologyDataSource, roadId, lines) {
 
     if (upperPositions) {
         addPolyline(
-            `centerline_upper_${roadId}`,
+            `centerline_upper_${roadId}${tag ? '_' + tag : ''}`,
             upperPositions,
             5,
             upperColor,
@@ -372,7 +372,7 @@ export function drawIntersectionCenterlines(topologyDataSource, roadId, lines) {
                     const positions = toPositions(groupLanes[lname]);
                     if (!positions) return;
                     addPolyline(
-                        `centerline_lane_${roadId}_${lname}`,
+                        `centerline_lane_${roadId}_${lname}${tag ? '_' + tag : ''}`,
                         positions,
                         4,
                         solidColor,

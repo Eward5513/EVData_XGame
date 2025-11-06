@@ -13,8 +13,8 @@ BASE_DIR: str = "/home/tzhang174/EVData_XGame"
 
 # Per-road intersection centers as (lat, lon)
 CENTERS: dict[str, tuple[float, float]] = {
-    'A0003': (32.345137, 123.152539),
-    'A0008': (32.327137, 123.181261),
+    'A0003': (32.34513595, 123.15253329),
+    'A0008': (32.32708227, 123.18126882),
 }
 
 # Refine step parameters
