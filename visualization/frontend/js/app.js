@@ -4,7 +4,7 @@ import { API_BASE_URL, ANALYSIS_CENTERS, CENTER_CHANGE_RADIUS_METERS } from './c
 import { getSpeedColor as getSpeedColorUtil, getVehicleColors as getVehicleColorsUtil, blendColors as blendColorsUtil } from './utils/color.js';
 import { offsetLonLat } from './utils/geo.js';
 import { drawAnalysisCenterOverlay as drawCenterOverlay } from './overlays/analysisOverlay.js';
-import { drawIntersectionInference as drawInference } from './overlays/inference.js';
+import { drawIntersectionInference as drawInference, drawIntersectionCenterlines as drawCenterlines } from './overlays/inference.js';
 import { displayTopology as displayTopologyExt } from './overlays/topology.js';
 import { drawSpeedChart as drawSpeedChartExt } from './charts/speedChart.js';
 import { drawGenericMetricChart as drawGenericMetricChartExt } from './charts/genericChart.js';
@@ -164,21 +164,33 @@ class GeoVisualization {
      * Load and render intersection inference overlays for configured roads
      */
     async loadIntersectionInferenceOverlays() {
-        const roadIds = ['A0003', 'A0008'];
         try {
-            const tasks = roadIds.map(async (rid) => {
-                const url = `${this.apiBaseUrl}/intersection/inference?road_id=${rid}`;
-                const resp = await fetch(url);
-                const data = await resp.json();
-                if (data.status === 'success' && data.inference) {
-                    this.drawIntersectionInference(rid, data.inference);
-                } else {
-                    console.warn(`Failed to load intersection inference for ${rid}:`, data.message);
+            // Clear previous overlays
+            if (this.topologyDataSource) {
+                this.topologyDataSource.entities.removeAll();
+            }
+            // Load all intersections' centerlines from server
+            const resp = await fetch(`${this.apiBaseUrl}/intersection/centerlines`);
+            const result = await resp.json();
+            if (!(result && result.status === 'success' && result.centerlines)) {
+                throw new Error(result && result.message ? result.message : 'Failed to load centerlines');
+            }
+
+            const centerlines = result.centerlines || {};
+            const roads = Object.keys(centerlines);
+
+            // Draw center, lower and upper lane centerlines for each road
+            roads.forEach((rid) => {
+                try {
+                    const lines = centerlines[rid];
+                    if (!lines) return;
+                    drawCenterlines(this.topologyDataSource, rid, lines);
+                } catch (e) {
+                    console.warn(`Failed to render centerlines for ${rid}:`, e);
                 }
             });
-            await Promise.all(tasks);
         } catch (e) {
-            console.error('Error loading intersection inference overlays:', e);
+            console.error('Error loading intersection overlays:', e);
         }
     }
 

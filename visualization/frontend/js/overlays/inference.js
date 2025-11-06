@@ -1,6 +1,7 @@
 export function drawIntersectionInference(topologyDataSource, roadId, inference, offsetLonLatFn) {
-    if (!inference || !inference.center_point || !topologyDataSource) return;
-    const cp = inference.center_point;
+    if (!inference || !topologyDataSource) return;
+    const hasCenter = !!(inference.center_point && (inference.center_point.lon !== undefined) && (inference.center_point.lat !== undefined));
+    const cp = inference.center_point || {};
     const centerLon = Number(cp.lon);
     const centerLat = Number(cp.lat);
     const centerX = Number(cp.x_m);
@@ -11,31 +12,33 @@ export function drawIntersectionInference(topologyDataSource, roadId, inference,
     const colorStop = (roadId === 'A0008') ? Cesium.Color.YELLOW : Cesium.Color.ORANGE;
     const colorCenter = (roadId === 'A0008') ? Cesium.Color.MAGENTA : Cesium.Color.CYAN;
 
-    topologyDataSource.entities.add({
-        id: `intersection_center_${roadId}`,
-        position: Cesium.Cartesian3.fromDegrees(centerLon, centerLat),
-        point: {
-            pixelSize: 12,
-            color: colorCenter,
-            outlineColor: Cesium.Color.WHITE,
-            outlineWidth: 2
-        },
-        label: {
-            text: `${roadId} Center`,
-            font: '14px sans-serif',
-            fillColor: Cesium.Color.WHITE,
-            outlineColor: Cesium.Color.BLACK,
-            outlineWidth: 2,
-            style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-            verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-            pixelOffset: new Cesium.Cartesian2(0, -20)
-        }
-    });
+    if (hasCenter) {
+        topologyDataSource.entities.add({
+            id: `intersection_center_${roadId}`,
+            position: Cesium.Cartesian3.fromDegrees(centerLon, centerLat),
+            point: {
+                pixelSize: 12,
+                color: colorCenter,
+                outlineColor: Cesium.Color.WHITE,
+                outlineWidth: 2
+            },
+            label: {
+                text: `${roadId} Center`,
+                font: '14px sans-serif',
+                fillColor: Cesium.Color.WHITE,
+                outlineColor: Cesium.Color.BLACK,
+                outlineWidth: 2,
+                style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+                pixelOffset: new Cesium.Cartesian2(0, -20)
+            }
+        });
+    }
 
     const L_vis = 800.0;
     const Ls = 20.0;
 
-    (inference.approaches || []).forEach(app => {
+    if (hasCenter) (inference.approaches || []).forEach(app => {
         try {
             const axis = app.axis || {};
             const angleDeg = Number(axis.angle_deg) || 0.0;
@@ -148,39 +151,41 @@ export function drawIntersectionInference(topologyDataSource, roadId, inference,
         const lanesStraight = inference.lanes_straight || {};
         const laneColor = (roadId === 'A0008') ? Cesium.Color.LIME : Cesium.Color.GREEN;
         const laneVis = 600.0;
-        ['W','E','S','N'].forEach(side => {
-            const sideObj = lanesStraight[side];
-            if (!sideObj || !Array.isArray(sideObj.lanes)) return;
-            sideObj.lanes.forEach((ln, idx) => {
-                try {
-                    const angleDeg = Number(ln.angle_deg) || 0.0;
-                    const rho = Number(ln.rho_m) || 0.0;
-                    const n = ln.n || [0, 1];
-                    const nDotCenter = n[0] * centerXY[0] + n[1] * centerXY[1];
-                    const alpha = rho - nDotCenter;
-                    const nAngle = (angleDeg + 90.0) % 360.0;
-                    const tAngle = angleDeg;
-                    const [baseLon, baseLat] = offsetLonLatFn(centerLon, centerLat, alpha, nAngle);
-                    const [lon1, lat1] = offsetLonLatFn(baseLon, baseLat, -laneVis / 2, tAngle);
-                    const [lon2, lat2] = offsetLonLatFn(baseLon, baseLat, +laneVis / 2, tAngle);
-                    topologyDataSource.entities.add({
-                        id: `lane_${roadId}_${side}_${idx}`,
-                        polyline: {
-                            positions: [
-                                Cesium.Cartesian3.fromDegrees(lon1, lat1),
-                                Cesium.Cartesian3.fromDegrees(lon2, lat2)
-                            ],
-                            width: 4,
-                            material: laneColor.withAlpha(0.85),
-                            clampToGround: true
-                        },
-                        description: `<h3>Straight Lane ${side}-${idx+1}</h3><p>Angle: ${angleDeg.toFixed(1)}°</p>`
-                    });
-                } catch (e) {
-                    // skip one lane on error
-                }
+        if (hasCenter) {
+            ['W','E','S','N'].forEach(side => {
+                const sideObj = lanesStraight[side];
+                if (!sideObj || !Array.isArray(sideObj.lanes)) return;
+                sideObj.lanes.forEach((ln, idx) => {
+                    try {
+                        const angleDeg = Number(ln.angle_deg) || 0.0;
+                        const rho = Number(ln.rho_m) || 0.0;
+                        const n = ln.n || [0, 1];
+                        const nDotCenter = n[0] * centerXY[0] + n[1] * centerXY[1];
+                        const alpha = rho - nDotCenter;
+                        const nAngle = (angleDeg + 90.0) % 360.0;
+                        const tAngle = angleDeg;
+                        const [baseLon, baseLat] = offsetLonLatFn(centerLon, centerLat, alpha, nAngle);
+                        const [lon1, lat1] = offsetLonLatFn(baseLon, baseLat, -laneVis / 2, tAngle);
+                        const [lon2, lat2] = offsetLonLatFn(baseLon, baseLat, +laneVis / 2, tAngle);
+                        topologyDataSource.entities.add({
+                            id: `lane_${roadId}_${side}_${idx}`,
+                            polyline: {
+                                positions: [
+                                    Cesium.Cartesian3.fromDegrees(lon1, lat1),
+                                    Cesium.Cartesian3.fromDegrees(lon2, lat2)
+                                ],
+                                width: 4,
+                                material: laneColor.withAlpha(0.85),
+                                clampToGround: true
+                            },
+                            description: `<h3>Straight Lane ${side}-${idx+1}</h3><p>Angle: ${angleDeg.toFixed(1)}°</p>`
+                        });
+                    } catch (e) {
+                        // skip one lane on error
+                    }
+                });
             });
-        });
+        }
     } catch (e) {
         console.warn('Failed to render straight lanes:', e);
     }
@@ -225,6 +230,55 @@ export function drawIntersectionInference(topologyDataSource, roadId, inference,
     } catch (e) {
         console.warn('Failed to render turn polylines:', e);
     }
+
+    // Render fitted centerline(s) if provided
+    try {
+        const colorFit1 = (roadId === 'A0003') ? Cesium.Color.GOLD : Cesium.Color.LIME;
+        const colorFit2 = (roadId === 'A0008') ? Cesium.Color.SKYBLUE : Cesium.Color.ORANGE;
+
+        // Always render single overall centerline (dashed) if provided
+        const fitSingle = inference.fitted_centerline;
+        if (fitSingle && Array.isArray(fitSingle.coordinates) && fitSingle.coordinates.length >= 2) {
+            const positions = fitSingle.coordinates.map(([lo, la]) => Cesium.Cartesian3.fromDegrees(Number(lo), Number(la)));
+            topologyDataSource.entities.add({
+                id: `fitted_centerline_${roadId}`,
+                polyline: {
+                    positions,
+                    width: 6,
+                    material: colorFit1.withAlpha(0.95),
+                    clampToGround: true
+                },
+                description: `<h3>Fitted Centerline</h3><p>Vertices: ${fitSingle.coordinates.length}</p>`
+            });
+        }
+
+        // Render lower/upper lane centerlines as solid if provided
+        const fits = inference.fitted_centerlines;
+        if (fits) {
+            const lines = [];
+            if (Array.isArray(fits)) {
+                lines.push(...fits.filter(f => f && Array.isArray(f.coordinates) && f.coordinates.length >= 2));
+            } else if (typeof fits === 'object') {
+                if (fits.low && Array.isArray(fits.low.coordinates) && fits.low.coordinates.length >= 2) lines.push(fits.low);
+                if (fits.up && Array.isArray(fits.up.coordinates) && fits.up.coordinates.length >= 2) lines.push(fits.up);
+            }
+            lines.forEach((f, idx) => {
+                const positions = f.coordinates.map(([lo, la]) => Cesium.Cartesian3.fromDegrees(Number(lo), Number(la)));
+                topologyDataSource.entities.add({
+                    id: `fitted_lane_center_${roadId}_${idx}`,
+                    polyline: {
+                        positions,
+                        width: 6,
+                        material: (idx === 0 ? colorFit1 : colorFit2).withAlpha(0.95),
+                        clampToGround: true
+                    },
+                    description: `<h3>Lane Centerline ${idx + 1}</h3><p>Vertices: ${f.coordinates.length}</p>`
+                });
+            });
+        }
+    } catch (e) {
+        console.warn('Failed to render fitted centerline(s):', e);
+    }
 }
 
 
@@ -233,3 +287,120 @@ export function drawIntersectionInference(topologyDataSource, roadId, inference,
 
 
 
+
+export function drawIntersectionCenterlines(topologyDataSource, roadId, lines) {
+    if (!topologyDataSource || !lines) return;
+
+    const toPositions = (coords) => {
+        if (!Array.isArray(coords) || coords.length < 2) return null;
+        try {
+            return coords.map(([lo, la]) => Cesium.Cartesian3.fromDegrees(Number(lo), Number(la)));
+        } catch (_) {
+            return null;
+        }
+    };
+
+    const addPolyline = (id, positions, width, material, description) => {
+        if (!positions || positions.length < 2) return;
+        topologyDataSource.entities.add({
+            id,
+            polyline: {
+                positions,
+                width,
+                material,
+                clampToGround: true
+            },
+            description
+        });
+    };
+
+    const centerPositions = toPositions(lines.center) || toPositions(lines.lane_divider) || toPositions(lines.centerline);
+    const lowerPositions = toPositions(lines.lower_lane) || toPositions(lines.lower) || toPositions(lines.low);
+    const upperPositions = toPositions(lines.upper_lane) || toPositions(lines.upper) || toPositions(lines.up);
+
+    const centerColor = Cesium.Color.GOLD.withAlpha(0.95);
+    const lowerColor = Cesium.Color.LIME.withAlpha(0.95);
+    const upperColor = Cesium.Color.ORANGE.withAlpha(0.95);
+
+    // Center line as dashed
+    if (centerPositions) {
+        addPolyline(
+            `centerline_center_${roadId}`,
+            centerPositions,
+            6,
+            new Cesium.PolylineDashMaterialProperty({
+                color: centerColor,
+                dashLength: 16.0
+            }),
+            `<h3>${roadId} Center</h3>`
+        );
+    }
+
+    // Lower/upper lanes as solid
+    if (lowerPositions) {
+        addPolyline(
+            `centerline_lower_${roadId}`,
+            lowerPositions,
+            5,
+            lowerColor,
+            `<h3>${roadId} Lower Lane</h3>`
+        );
+    }
+
+    if (upperPositions) {
+        addPolyline(
+            `centerline_upper_${roadId}`,
+            upperPositions,
+            5,
+            upperColor,
+            `<h3>${roadId} Upper Lane</h3>`
+        );
+    }
+
+    // Draw lanes map (supports new nested JSON format):
+    // - legacy: lines.lanes = { laneName: [[lon,lat], ...] }
+    // - new: lines.north.lanes / lines.south.lanes with keys like north_lane1, south_lane2, ...
+    try {
+        const solidColor = Cesium.Color.LIME.withAlpha(0.9);
+
+        const drawLaneGroup = (group) => {
+            if (!group || typeof group !== 'object') return;
+            const groupLanes = group.lanes || group; // accept either {lanes:{...}} or flat mapping
+            if (!groupLanes || typeof groupLanes !== 'object') return;
+            Object.keys(groupLanes).forEach((lname) => {
+                try {
+                    const positions = toPositions(groupLanes[lname]);
+                    if (!positions) return;
+                    addPolyline(
+                        `centerline_lane_${roadId}_${lname}`,
+                        positions,
+                        4,
+                        solidColor,
+                        `<h3>${roadId} ${lname}</h3>`
+                    );
+                } catch (_) { /* ignore one lane failure */ }
+            });
+        };
+
+        // Legacy flat object support
+        if (lines.lanes && typeof lines.lanes === 'object') {
+            drawLaneGroup(lines.lanes);
+        }
+        // New nested direction groups
+        if (lines.north && typeof lines.north === 'object') {
+            drawLaneGroup(lines.north);
+        }
+        if (lines.south && typeof lines.south === 'object') {
+            drawLaneGroup(lines.south);
+        }
+        // Optional: handle east/west if present in future data
+        if (lines.east && typeof lines.east === 'object') {
+            drawLaneGroup(lines.east);
+        }
+        if (lines.west && typeof lines.west === 'object') {
+            drawLaneGroup(lines.west);
+        }
+    } catch (e) {
+        // ignore lanes section if not provided
+    }
+}

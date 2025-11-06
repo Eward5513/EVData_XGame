@@ -216,17 +216,6 @@
             </div>
 
             <div class="panel-section">
-                <button id="loadInferenceBtn" class="btn btn-primary">Load Intersection Overlays</button>
-                <button id="clearInferenceBtn" class="btn btn-secondary">Clear Overlays</button>
-            </div>
-
-            <div class="panel-section">
-                <div class="status" id="inferenceStatus" style="display: none;">
-                    <span id="inferenceStatusText"></span>
-                </div>
-            </div>
-
-            <div class="panel-section">
                 <div id="rawStatus" class="status" style="display: none;">
                     <span id="rawStatusText"></span>
                 </div>
@@ -438,6 +427,26 @@
                     <span id="speedStatusText"></span>
                 </div>
             </div>
+            </div>
+        </div>
+
+        <!-- Infer Road Panel -->
+        <div id="inferRoadPanel" class="control-panel">
+            <div class="panel-header" data-panel="inferRoadPanel">
+                <h3>Infer Road Overlays</h3>
+                <div class="collapse-indicator">−</div>
+            </div>
+            <div class="panel-content">
+                <div class="panel-section">
+                    <button id="loadInferenceBtn" class="btn btn-primary">Load Intersection Overlays</button>
+                    <button id="clearInferenceBtn" class="btn btn-secondary">Clear Overlays</button>
+                </div>
+
+                <div class="panel-section">
+                    <div class="status" id="inferenceStatus" style="display: none;">
+                        <span id="inferenceStatusText"></span>
+                    </div>
+                </div>
             </div>
         </div>
 

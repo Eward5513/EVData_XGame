@@ -306,6 +306,8 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 self._handle_intersection_topology(params)
             elif path == '/api/intersection/inference':
                 self._handle_intersection_inference(params)
+            elif path == '/api/intersection/centerlines':
+                self._handle_intersection_centerlines()
             elif path == '/api/excluded/data':
                 self._handle_excluded_data(params)
             elif path == '/api/direction/segments':
@@ -1257,6 +1259,56 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             self._send_json_response({
                 'status': 'error',
                 'message': f'Error loading inference: {str(e)}'
+            }, 500)
+
+    def _handle_intersection_centerlines(self):
+        """Serve all intersections' centerlines from data/intersection.json.
+        Expects the file to contain a mapping of road_id -> { center, lower_lane, upper_lane } with
+        each value being an array of [lon, lat] pairs.
+        """
+        try:
+            # Prefer data/intersection.json under repository root
+            inter_path = os.path.join(CSV_BASE_PATH, 'intersection.json')
+            # Fallback to repo root absolute if not found under data
+            if not os.path.exists(inter_path):
+                alt_json = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'intersection.json'))
+                if os.path.exists(alt_json):
+                    inter_path = alt_json
+
+            if not os.path.exists(inter_path):
+                self._send_json_response({
+                    'status': 'error',
+                    'message': f'Centerlines file not found: {inter_path}'
+                }, 404)
+                return
+
+            with open(inter_path, 'r', encoding='utf-8') as f:
+                payload = json.load(f)
+
+            if not isinstance(payload, dict):
+                self._send_json_response({
+                    'status': 'error',
+                    'message': 'Invalid intersection.json format (expected object mapping road_id to lines)'
+                }, 400)
+                return
+
+            roads = list(payload.keys())
+            self._send_json_response({
+                'status': 'success',
+                'centerlines': payload,
+                'roads': roads,
+                'total': len(roads),
+                'file_path': inter_path
+            })
+        except json.JSONDecodeError as e:
+            self._send_json_response({
+                'status': 'error',
+                'message': f'Invalid JSON in centerlines file: {str(e)}'
+            }, 500)
+        except Exception as e:
+            self._send_json_response({
+                'status': 'error',
+                'message': f'Error loading centerlines: {str(e)}'
             }, 500)
 
     def _handle_raw_dates(self, params):
