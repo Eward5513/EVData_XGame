@@ -1,0 +1,6 @@
+{
+  "global_period_s": 138.0,
+  "aggregation": "weighted_median over reconciled per-group periods",
+  "weights": "min(pairs_green, pairs_red) else max(n_g, n_r)",
+  "groups_used": 25
+}

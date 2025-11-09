@@ -1,0 +1,374 @@
+{
+  "A0003": {
+    "west": {
+      "params": {
+        "directions_used": [
+          "A1-1",
+          "B2-1",
+          "B3-2"
+        ],
+        "speed_thresh_mps": 1.3888888888888888,
+        "max_upstream_m": 120.0,
+        "quantile_for_stopline": 0.95,
+        "paired_axis": "EW"
+      },
+      "orientation_check": {
+        "share_s_raw_pos_before_flip": 0.029282576866764276,
+        "final_share_s_pos": 0.0,
+        "expect_upstream_nonpos": true
+      },
+      "stopline": {
+        "stop_s_m": -19.698433376719176,
+        "distance_to_center_m": 19.698433376719176,
+        "beyond_fraction": 0.07785467128027682,
+        "constraint_ok": false
+      },
+      "overall": {
+        "n_points": 578,
+        "s_m_summary": {
+          "count": 578,
+          "min": -113.9879753159719,
+          "p10": -76.46775033719265,
+          "p25": -58.83384354694327,
+          "median": -41.75219509665059,
+          "p75": -31.204303890551053,
+          "p90": -20.47673796472411,
+          "p95": -16.955959279069866,
+          "max": -9.963775712701512,
+          "mean": -46.20473582231901,
+          "std": 21.25744387329676
+        }
+      }
+    },
+    "east": {
+      "params": {
+        "directions_used": [
+          "A1-2",
+          "B2-2",
+          "B3-1"
+        ],
+        "speed_thresh_mps": 1.3888888888888888,
+        "max_upstream_m": 120.0,
+        "quantile_for_stopline": 0.95,
+        "paired_axis": "EW"
+      },
+      "orientation_check": {
+        "share_s_raw_pos_before_flip": 0.8954468802698144,
+        "final_share_s_pos": 0.0,
+        "expect_upstream_nonpos": true
+      },
+      "stopline": {
+        "stop_s_m": -19.698433376719176,
+        "distance_to_center_m": 19.698433376719176,
+        "beyond_fraction": 0.005698005698005698,
+        "constraint_ok": false
+      },
+      "overall": {
+        "n_points": 351,
+        "s_m_summary": {
+          "count": 351,
+          "min": -119.65191367142147,
+          "p10": -94.95260649622838,
+          "p25": -78.00160185436704,
+          "median": -59.811352854469284,
+          "p75": -42.07002591927835,
+          "p90": -34.51599365747579,
+          "p95": -32.2190557376332,
+          "max": -6.515156979958273,
+          "mean": -62.053374088720936,
+          "std": 23.486903116288058
+        }
+      }
+    },
+    "south": {
+      "params": {
+        "directions_used": [
+          "A2-2",
+          "A3-1",
+          "B1-1"
+        ],
+        "speed_thresh_mps": 1.3888888888888888,
+        "max_upstream_m": 120.0,
+        "quantile_for_stopline": 0.95,
+        "paired_axis": "NS"
+      },
+      "orientation_check": {
+        "share_s_raw_pos_before_flip": 0.75,
+        "final_share_s_pos": 0.0,
+        "expect_upstream_nonpos": true
+      },
+      "stopline": {
+        "stop_s_m": -10.41526966705167,
+        "distance_to_center_m": 10.41526966705167,
+        "beyond_fraction": 0.0,
+        "constraint_ok": false
+      },
+      "overall": {
+        "n_points": 93,
+        "s_m_summary": {
+          "count": 93,
+          "min": -113.66893405397188,
+          "p10": -89.20117175548442,
+          "p25": -58.27780100956965,
+          "median": -45.530542058448994,
+          "p75": -36.76308745697192,
+          "p90": -33.92632530966792,
+          "p95": -31.688749963573002,
+          "max": -15.825469728467233,
+          "mean": -51.94060107480269,
+          "std": 21.11833277814896
+        }
+      }
+    },
+    "north": {
+      "params": {
+        "directions_used": [
+          "A2-1",
+          "A3-2",
+          "B1-2"
+        ],
+        "speed_thresh_mps": 1.3888888888888888,
+        "max_upstream_m": 120.0,
+        "quantile_for_stopline": 0.95,
+        "paired_axis": "NS"
+      },
+      "orientation_check": {
+        "share_s_raw_pos_before_flip": 0.09230769230769231,
+        "final_share_s_pos": 0.0,
+        "expect_upstream_nonpos": true
+      },
+      "stopline": {
+        "stop_s_m": -10.41526966705167,
+        "distance_to_center_m": 10.41526966705167,
+        "beyond_fraction": 0.07909604519774012,
+        "constraint_ok": false
+      },
+      "overall": {
+        "n_points": 177,
+        "s_m_summary": {
+          "count": 177,
+          "min": -114.72736605072858,
+          "p10": -78.34197015884752,
+          "p25": -58.94027124084603,
+          "median": -43.9729141698559,
+          "p75": -33.72662581778625,
+          "p90": -12.678464976276112,
+          "p95": -7.160056499760299,
+          "max": -3.008049798468902,
+          "mean": -46.49564328276003,
+          "std": 22.94501929537398
+        }
+      }
+    },
+    "_pairs": {
+      "EW": {
+        "distance_to_center_m": 19.698433376719176,
+        "n_east": 351,
+        "n_west": 578,
+        "n_total": 929,
+        "beyond_count_east": 2,
+        "beyond_count_west": 45,
+        "beyond_fraction_combined": 0.05059203444564048,
+        "constraint_ok": false,
+        "note": null
+      },
+      "NS": {
+        "distance_to_center_m": 10.41526966705167,
+        "n_north": 177,
+        "n_south": 93,
+        "n_total": 270,
+        "beyond_count_north": 14,
+        "beyond_count_south": 0,
+        "beyond_fraction_combined": 0.05185185185185185,
+        "constraint_ok": false,
+        "note": null
+      }
+    }
+  },
+  "A0008": {
+    "west": {
+      "params": {
+        "directions_used": [
+          "A1-1",
+          "B2-1",
+          "B3-2"
+        ],
+        "speed_thresh_mps": 1.3888888888888888,
+        "max_upstream_m": 120.0,
+        "quantile_for_stopline": 0.95,
+        "paired_axis": "EW"
+      },
+      "orientation_check": {
+        "share_s_raw_pos_before_flip": 0.07975460122699386,
+        "final_share_s_pos": 0.0,
+        "expect_upstream_nonpos": true
+      },
+      "stopline": {
+        "stop_s_m": -30.755762535644163,
+        "distance_to_center_m": 30.755762535644163,
+        "beyond_fraction": 0.044444444444444446,
+        "constraint_ok": false
+      },
+      "overall": {
+        "n_points": 135,
+        "s_m_summary": {
+          "count": 135,
+          "min": -111.98138754162036,
+          "p10": -55.83311930085592,
+          "p25": -48.71559120942898,
+          "median": -41.66866648291203,
+          "p75": -35.775349699443154,
+          "p90": -33.17632484238945,
+          "p95": -30.98337073329038,
+          "max": -6.632418419478517,
+          "mean": -43.74322183621539,
+          "std": 14.481599286331713
+        }
+      }
+    },
+    "east": {
+      "params": {
+        "directions_used": [
+          "A1-2",
+          "B2-2",
+          "B3-1"
+        ],
+        "speed_thresh_mps": 1.3888888888888888,
+        "max_upstream_m": 120.0,
+        "quantile_for_stopline": 0.95,
+        "paired_axis": "EW"
+      },
+      "orientation_check": {
+        "share_s_raw_pos_before_flip": 0.8513931888544891,
+        "final_share_s_pos": 0.0,
+        "expect_upstream_nonpos": true
+      },
+      "stopline": {
+        "stop_s_m": -30.755762535644163,
+        "distance_to_center_m": 30.755762535644163,
+        "beyond_fraction": 0.055299539170506916,
+        "constraint_ok": false
+      },
+      "overall": {
+        "n_points": 217,
+        "s_m_summary": {
+          "count": 217,
+          "min": -118.81843453899275,
+          "p10": -103.91088164215746,
+          "p25": -79.64568234309245,
+          "median": -60.476424008022335,
+          "p75": -41.66710864404655,
+          "p90": -32.0513263343813,
+          "p95": -29.990703136282868,
+          "max": -0.18711707335222205,
+          "mean": -63.48601047407278,
+          "std": 26.329663071081992
+        }
+      }
+    },
+    "south": {
+      "params": {
+        "directions_used": [
+          "A2-2",
+          "A3-1",
+          "B1-1"
+        ],
+        "speed_thresh_mps": 1.3888888888888888,
+        "max_upstream_m": 120.0,
+        "quantile_for_stopline": 0.95,
+        "paired_axis": "NS"
+      },
+      "orientation_check": {
+        "share_s_raw_pos_before_flip": 0.8151898734177215,
+        "final_share_s_pos": 0.0,
+        "expect_upstream_nonpos": true
+      },
+      "stopline": {
+        "stop_s_m": -13.98610571369008,
+        "distance_to_center_m": 13.98610571369008,
+        "beyond_fraction": 0.05161290322580645,
+        "constraint_ok": false
+      },
+      "overall": {
+        "n_points": 310,
+        "s_m_summary": {
+          "count": 310,
+          "min": -111.2173100377826,
+          "p10": -63.24405410404878,
+          "p25": -45.670701522206244,
+          "median": -33.05747703114882,
+          "p75": -23.95789186643856,
+          "p90": -19.352839416433667,
+          "p95": -13.063682457623464,
+          "max": -0.6039399027619,
+          "mean": -37.29516331214169,
+          "std": 19.174937954894187
+        }
+      }
+    },
+    "north": {
+      "params": {
+        "directions_used": [
+          "A2-1",
+          "A3-2",
+          "B1-2"
+        ],
+        "speed_thresh_mps": 1.3888888888888888,
+        "max_upstream_m": 120.0,
+        "quantile_for_stopline": 0.95,
+        "paired_axis": "NS"
+      },
+      "orientation_check": {
+        "share_s_raw_pos_before_flip": 0.08126410835214447,
+        "final_share_s_pos": 0.0,
+        "expect_upstream_nonpos": true
+      },
+      "stopline": {
+        "stop_s_m": -13.98610571369008,
+        "distance_to_center_m": 13.98610571369008,
+        "beyond_fraction": 0.05115089514066496,
+        "constraint_ok": false
+      },
+      "overall": {
+        "n_points": 391,
+        "s_m_summary": {
+          "count": 391,
+          "min": -117.93946528189385,
+          "p10": -85.90388214527195,
+          "p25": -73.69731310591595,
+          "median": -53.26442854964646,
+          "p75": -40.17498046866497,
+          "p90": -34.02458931673199,
+          "p95": -13.25327532840988,
+          "max": -1.0744532625378784,
+          "mean": -56.47361552957142,
+          "std": 23.304249428671277
+        }
+      }
+    },
+    "_pairs": {
+      "EW": {
+        "distance_to_center_m": 30.755762535644163,
+        "n_east": 217,
+        "n_west": 135,
+        "n_total": 352,
+        "beyond_count_east": 12,
+        "beyond_count_west": 6,
+        "beyond_fraction_combined": 0.05113636363636364,
+        "constraint_ok": false,
+        "note": null
+      },
+      "NS": {
+        "distance_to_center_m": 13.98610571369008,
+        "n_north": 391,
+        "n_south": 310,
+        "n_total": 701,
+        "beyond_count_north": 20,
+        "beyond_count_south": 16,
+        "beyond_fraction_combined": 0.05135520684736091,
+        "constraint_ok": false,
+        "note": null
+      }
+    }
+  }
+}

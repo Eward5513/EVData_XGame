@@ -1,0 +1,84 @@
+{
+  "A0003": {
+    "params": {
+      "directions_used": [
+        "A1-2",
+        "B2-2",
+        "B3-1"
+      ],
+      "speed_thresh_mps": 1.3888888888888888,
+      "max_upstream_m": 120.0,
+      "quantile_for_stopline": 0.95
+    },
+    "orientation_check": {
+      "share_s_raw_pos_before_flip": 0.8954468802698144,
+      "final_share_s_pos": 0.0,
+      "expect_upstream_nonpos": true
+    },
+    "stopline": {
+      "stop_s_m": -32.19408342820351,
+      "distance_to_center_m": 32.19408342820351,
+      "beyond_fraction": 0.04843304843304843,
+      "constraint_ok": true
+    },
+    "overall": {
+      "n_points": 351,
+      "s_m_summary": {
+        "count": 351,
+        "min": -119.65191367142147,
+        "p10": -94.95260649622838,
+        "p25": -78.00160185436704,
+        "median": -59.811352854469284,
+        "p75": -42.07002591927835,
+        "p90": -34.51599365747579,
+        "p95": -32.2190557376332,
+        "max": -6.515156979958273,
+        "mean": -62.053374088720936,
+        "std": 23.486903116288058
+      },
+      "unique_vehicles": 284,
+      "unique_segments": 4
+    }
+  },
+  "A0008": {
+    "params": {
+      "directions_used": [
+        "A1-2",
+        "B2-2",
+        "B3-1"
+      ],
+      "speed_thresh_mps": 1.3888888888888888,
+      "max_upstream_m": 120.0,
+      "quantile_for_stopline": 0.95
+    },
+    "orientation_check": {
+      "share_s_raw_pos_before_flip": 0.8513931888544891,
+      "final_share_s_pos": 0.0,
+      "expect_upstream_nonpos": true
+    },
+    "stopline": {
+      "stop_s_m": -28.94615680807065,
+      "distance_to_center_m": 28.94615680807065,
+      "beyond_fraction": 0.04608294930875576,
+      "constraint_ok": true
+    },
+    "overall": {
+      "n_points": 217,
+      "s_m_summary": {
+        "count": 217,
+        "min": -118.81843453899275,
+        "p10": -103.91088164215746,
+        "p25": -79.64568234309245,
+        "median": -60.476424008022335,
+        "p75": -41.66710864404655,
+        "p90": -32.0513263343813,
+        "p95": -29.990703136282868,
+        "max": -0.18711707335222205,
+        "mean": -63.48601047407278,
+        "std": 26.329663071081992
+      },
+      "unique_vehicles": 149,
+      "unique_segments": 4
+    }
+  }
+}
