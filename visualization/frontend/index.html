@@ -265,45 +265,54 @@
             </div>
         </div>
 
-        <!-- Traffic Light Panel -->
-        <div id="trafficPanel" class="control-panel">
-            <div class="panel-header" data-panel="trafficPanel">
-                <h3>Traffic Light Status Query</h3>
+        <!-- Traffic Light Timing Panel (A-direction crossover) -->
+        <div id="crossoverPanel" class="control-panel">
+            <div class="panel-header" data-panel="crossoverPanel">
+                <h3>Traffic Light Timing</h3>
                 <div class="collapse-indicator">−</div>
             </div>
             <div class="panel-content">
-            
-            <div class="panel-section">
-                <label for="trafficRoadId">Road Intersection:</label>
-                <select id="trafficRoadId">
-                    <option value="A0003" selected>A0003</option>
-                    <option value="A0008">A0008</option>
-                </select>
-            </div>
-            
-            <div class="panel-section">
-                <label for="cycleNum">Cycle Number:</label>
-                <input type="number" id="cycleNum" value="1" min="1" max="50" style="width: 80px;">
-                <button id="loadCyclesBtn" class="btn btn-small">Load Available Cycles</button>
-            </div>
-            
-            <div class="panel-section">
-                <button id="queryTrafficLightBtn" class="btn btn-primary">Query Traffic Light Status</button>
-            </div>
-
-            
-            
-            <div class="panel-section">
-                <div id="trafficLightStatus" class="traffic-light-status">
-                    <div class="status-message">No data queried yet. Click "Query Traffic Light Status" to view results.</div>
+                <div class="panel-section">
+                    <label for="crossoverRoadId">Road Intersection:</label>
+                    <select id="crossoverRoadId">
+                        <option value="A0003" selected>A0003</option>
+                        <option value="A0008">A0008</option>
+                    </select>
                 </div>
-            </div>
-
-            <div class="panel-section">
-                <div id="trafficStatus" class="status" style="display: none;">
-                    <span id="trafficStatusText"></span>
+                <div class="panel-section">
+                    <div>Directions:</div>
+                    <div id="crossoverDirection" class="direction-multi" style="display:flex; gap:8px; flex-wrap: wrap; margin-top:6px;">
+                        <label><input type="checkbox" name="crossoverDirection" value="A1-1" checked> A1-1 (East Straight)</label>
+                        <label><input type="checkbox" name="crossoverDirection" value="A1-2" checked> A1-2 (West Straight)</label>
+                        <label><input type="checkbox" name="crossoverDirection" value="B1-1"> B1-1 (North Straight)</label>
+                        <label><input type="checkbox" name="crossoverDirection" value="B1-2"> B1-2 (South Straight)</label>
+                        <label><input type="checkbox" name="crossoverDirection" value="A2-1"> A2-1 (Left to East)</label>
+                        <label><input type="checkbox" name="crossoverDirection" value="A2-2"> A2-2 (Left to West)</label>
+                        <label><input type="checkbox" name="crossoverDirection" value="B2-1"> B2-1 (Left to North)</label>
+                        <label><input type="checkbox" name="crossoverDirection" value="B2-2"> B2-2 (Left to South)</label>
+                    </div>
                 </div>
-            </div>
+                <div class="panel-section">
+                    <label for="crossoverDataset">Dataset:</label>
+                    <select id="crossoverDataset">
+                        <option value="standard" selected>Standard</option>
+                        <option value="real">Real (A1)</option>
+                    </select>
+                </div>
+                <div class="panel-section" style="display:flex; gap:8px; align-items:center;">
+                    <button id="loadCrossoverBtn" class="btn btn-primary">Load Crossovers</button>
+                    <button id="clearCrossoverBtn" class="btn btn-secondary">Clear</button>
+                </div>
+                <div class="panel-section">
+                    <div id="crossoverStatus" class="status" style="display:none;">
+                        <span id="crossoverStatusText"></span>
+                    </div>
+                </div>
+                <div class="panel-section">
+                    <div id="crossoverIntervals" class="traffic-light-status">
+                        <div class="status-message">Click "Load Crossovers" to view intervals and render points.</div>
+                    </div>
+                </div>
             </div>
         </div>
 

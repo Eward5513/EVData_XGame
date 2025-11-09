@@ -12,6 +12,7 @@ from urllib.parse import urlparse, parse_qs
 CSV_BASE_PATH = '../../data'
 TRAFFIC_SIGNAL_FILE = os.path.join(CSV_BASE_PATH, 'traffic_signal.csv')
 DIRECTION_FILE = os.path.join(CSV_BASE_PATH, 'direction.csv')
+STOPLINE_FILE = os.path.join(CSV_BASE_PATH, 'stopline.json')
 
 # Global variable to cache direction data
 direction_data = None
@@ -312,12 +313,18 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 self._handle_stopline_west(params)
             elif path == '/api/stopline/east':
                 self._handle_stopline_east(params)
+            elif path == '/api/stopline/all':
+                self._handle_stopline_all(params)
             elif path == '/api/excluded/data':
                 self._handle_excluded_data(params)
             elif path == '/api/direction/segments':
                 self._handle_direction_segments(params)
             elif path == '/api/trajectory/segment':
                 self._handle_trajectory_segment(params)
+            elif path == '/api/crossover/data':
+                self._handle_crossover_data(params)
+            elif path == '/api/crossover/time':
+                self._handle_crossover_time(params)
             elif path == '/api/raw/data':
                 self._handle_raw_data(params)
             elif path == '/api/raw/dates':
@@ -349,6 +356,8 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 '/api/speed/traffic-lights - Get traffic light data for speed analysis time range',
                 '/api/topology/intersection - Get intersection topology GeoJSON',
                 '/api/speed/time-range - Get available time range for specific date',
+                '/api/crossover/data - Get crossover (all directions) trajectory points',
+                '/api/crossover/time - Get crossover time intervals (all directions)',
                 '/api/raw/data - Get raw CSV trajectory data',
                 '/api/raw/dates - Get available raw dates',
                 '/health - Health check'
@@ -1463,6 +1472,74 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 'status': 'error',
                 'message': str(e)
             }, 500)
+
+    def _handle_stopline_all(self, params):
+        """Serve all-direction stopline geometry from data/stopline.json.
+        Expected format:
+        {
+          "A0003": {
+            "west": {"stopline_segment": [[lon,lat],[lon,lat]]},
+            "east": {"stopline_segment": [[lon,lat],[lon,lat]]},
+            "south": {"stopline_segment": [[lon,lat],[lon,lat]]},
+            "north": {"stopline_segment": [[lon,lat],[lon,lat]]}
+          },
+          ...
+        }
+        Optional query param road_id filters to a single intersection.
+        """
+        try:
+            road_id = params.get('road_id')
+            # Primary path under data/
+            stopline_path = os.path.join(CSV_BASE_PATH, 'stopline.json')
+            if not os.path.exists(stopline_path):
+                # Fallback to repo-root/data/
+                alt_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'stopline.json'))
+                if os.path.exists(alt_path):
+                    stopline_path = alt_path
+
+            if not os.path.exists(stopline_path):
+                self._send_json_response({
+                    'status': 'error',
+                    'message': 'stopline.json not found'
+                }, 404)
+                return
+
+            with open(stopline_path, 'r', encoding='utf-8') as f:
+                payload = json.load(f)
+
+            if not isinstance(payload, dict):
+                self._send_json_response({
+                    'status': 'error',
+                    'message': 'Invalid stopline.json format (expected object keyed by road_id)'
+                }, 400)
+                return
+
+            if road_id:
+                if road_id in payload:
+                    payload = { road_id: payload[road_id] }
+                else:
+                    self._send_json_response({
+                        'status': 'error',
+                        'message': f'Road {road_id} not found in stopline.json'
+                    }, 404)
+                    return
+
+            self._send_json_response({
+                'status': 'success',
+                'stoplines': payload,
+                'roads': list(payload.keys()),
+                'file_path': stopline_path
+            })
+        except json.JSONDecodeError as e:
+            self._send_json_response({
+                'status': 'error',
+                'message': f'Invalid JSON in stopline.json: {str(e)}'
+            }, 500)
+        except Exception as e:
+            self._send_json_response({
+                'status': 'error',
+                'message': str(e)
+            }, 500)
     def _handle_raw_dates(self, params):
         """Return available dates from the raw CSV (<road_id>.csv)."""
         try:
@@ -1796,6 +1873,158 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 rows.append(row)
 
             self._send_json_response({'status': 'success', 'road_id': road_id, 'vehicle_id': vehicle_id_i, 'date': date, 'seg_id': seg_id_i, 'total_points': len(rows), 'data': rows})
+        except Exception as e:
+            self._send_json_response({'status': 'error', 'message': str(e)}, 500)
+
+    def _handle_crossover_data(self, params):
+        """Serve crossover trajectory points from precomputed CSV (all supported directions)."""
+        try:
+            road_id = params.get('road_id', 'A0003')
+            direction_param = params.get('direction')
+            date = params.get('date')
+            directions = parse_directions_param(direction_param) or ['A1-1', 'A1-2']
+            dataset = str(params.get('dataset', 'standard') or 'standard').lower()
+
+            # Select dataset file
+            if dataset == 'real':
+                # A1 real synthesized boundary points
+                out_points_path = os.path.join(CSV_BASE_PATH, 'cross_overA.csv')
+            else:
+                out_points_path = os.path.join(CSV_BASE_PATH, 'cross_over.csv')
+            if not os.path.exists(out_points_path):
+                self._send_json_response({
+                    'status': 'error',
+                    'message': f'{os.path.basename(out_points_path)} not found. Please run generate_timing.py to produce it.'
+                }, 404)
+                return
+
+            base = pd.read_csv(out_points_path)
+            base = base[base['road_id'] == road_id]
+            if date:
+                base = base[base['date'] == date]
+            if not base.empty and directions:
+                dir_df = load_direction_data()
+                filt = (dir_df['road_id'] == road_id)
+                if directions:
+                    up_dirs = [d.upper() for d in directions]
+                    filt &= dir_df['direction'].astype(str).str.upper().isin(up_dirs)
+                if date:
+                    filt &= (dir_df['date'] == date)
+                dir_df = dir_df[filt][['vehicle_id', 'date', 'seg_id']].drop_duplicates()
+                if not dir_df.empty:
+                    key = ['vehicle_id', 'date', 'seg_id']
+                    base = base.merge(dir_df, on=key, how='inner')
+                else:
+                    base = base.iloc[0:0]
+            points_df = base
+
+            # Format response as list of dicts with refined-like fields
+            rows = []
+            if points_df is not None and not points_df.empty:
+                # Stable sort
+                sort_cols = [c for c in ['vehicle_id', 'date', 'seg_id', 'collectiontime'] if c in points_df.columns]
+                if sort_cols:
+                    points_df = points_df.sort_values(sort_cols)
+                for _, r in points_df.iterrows():
+                    item = {
+                        'vehicle_id': int(r['vehicle_id']),
+                        'collectiontime': int(r['collectiontime']),
+                        'date': str(r['date']),
+                        'time_stamp': str(r['time_stamp']),
+                        'road_id': str(r['road_id']),
+                        'longitude': float(r['longitude']),
+                        'latitude': float(r['latitude']),
+                        'speed': float(r['speed']) if 'speed' in r and pd.notna(r['speed']) else 0.0,
+                        'acceleratorpedal': float(r['acceleratorpedal']) if 'acceleratorpedal' in r and pd.notna(r['acceleratorpedal']) else 0.0,
+                        'brakestatus': int(r['brakestatus']) if 'brakestatus' in r and pd.notna(r['brakestatus']) else 0
+                    }
+                    if 'seg_id' in r and pd.notna(r['seg_id']):
+                        try:
+                            item['seg_id'] = int(r['seg_id'])
+                        except Exception:
+                            item['seg_id'] = 0
+                    if 'gearnum' in r:
+                        item['gearnum'] = str(r['gearnum']) if pd.notna(r['gearnum']) else 'N/A'
+                    if 'havebrake' in r:
+                        item['havebrake'] = str(r['havebrake']) if pd.notna(r['havebrake']) else 'N/A'
+                    if 'havedriver' in r:
+                        item['havedriver'] = str(r['havedriver']) if pd.notna(r['havedriver']) else 'N/A'
+                    if 'end_time' in r and pd.notna(r['end_time']) and str(r['end_time']).strip():
+                        item['end_time'] = str(r['end_time'])
+                    rows.append(item)
+
+            self._send_json_response({
+                'status': 'success',
+                'road_id': road_id,
+                'date': date,
+                'directions': directions,
+                'dataset': dataset,
+                'total_points': len(rows),
+                'data': rows
+            })
+        except Exception as e:
+            self._send_json_response({'status': 'error', 'message': str(e)}, 500)
+
+    def _handle_crossover_time(self, params):
+        """Serve crossover intervals from precomputed CSV (all supported directions)."""
+        try:
+            road_id = params.get('road_id', 'A0003')
+            direction_param = params.get('direction')
+            date = params.get('date')
+            directions = parse_directions_param(direction_param) or ['A1-1', 'A1-2']
+            dataset = str(params.get('dataset', 'standard') or 'standard').lower()
+
+            # Select dataset file
+            if dataset == 'real':
+                out_time_path = os.path.join(CSV_BASE_PATH, 'corss_timeA_real.csv')
+            else:
+                out_time_path = os.path.join(CSV_BASE_PATH, 'cross_over_time.csv')
+            if not os.path.exists(out_time_path):
+                self._send_json_response({
+                    'status': 'error',
+                    'message': f'{os.path.basename(out_time_path)} not found. Please run generate_timing.py to produce it.'
+                }, 404)
+                return
+
+            df = pd.read_csv(out_time_path)
+            df = df[df['road_id'] == road_id]
+            if directions:
+                up_dirs = [d.upper() for d in directions]
+                df = df[df['direction'].astype(str).str.upper().isin(up_dirs)]
+            if date:
+                df = df[df['date'] == date]
+            payload = []
+            if not df.empty:
+                df = df.sort_values(['vehicle_id', 'date', 'seg_id', 'enter_time'])
+                for _, r in df.iterrows():
+                    item = {
+                        'road_id': str(r['road_id']),
+                        'vehicle_id': int(r['vehicle_id']),
+                        'date': str(r['date']),
+                        'seg_id': int(r['seg_id']),
+                        'direction': str(r['direction']),
+                        'enter_time': str(r['enter_time']),
+                        'exit_time': str(r['exit_time']),
+                        'enter_idx': int(r['enter_idx']) if 'enter_idx' in r and pd.notna(r['enter_idx']) else None,
+                        'exit_idx': int(r['exit_idx']) if 'exit_idx' in r and pd.notna(r['exit_idx']) else None,
+                        'duration_s': int(r['duration_s']) if 'duration_s' in r and pd.notna(r['duration_s']) else None
+                    }
+                    if 'num_points' in r and pd.notna(r['num_points']):
+                        try:
+                            item['num_points'] = int(r['num_points'])
+                        except Exception:
+                            pass
+                    payload.append(item)
+
+            self._send_json_response({
+                'status': 'success',
+                'road_id': road_id,
+                'date': date,
+                'directions': directions,
+                'dataset': dataset,
+                'total_intervals': len(payload),
+                'intervals': payload
+            })
         except Exception as e:
             self._send_json_response({'status': 'error', 'message': str(e)}, 500)
 

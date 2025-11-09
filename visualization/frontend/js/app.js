@@ -5,7 +5,7 @@ import { getSpeedColor as getSpeedColorUtil, getVehicleColors as getVehicleColor
 import { offsetLonLat } from './utils/geo.js';
 import { drawAnalysisCenterOverlay as drawCenterOverlay } from './overlays/analysisOverlay.js';
 import { drawIntersectionInference as drawInference, drawIntersectionCenterlines as drawCenterlines } from './overlays/inference.js';
-import { drawWestStoplines as drawWestStoplinesExt, drawEastStoplines as drawEastStoplinesExt } from './overlays/topology.js';
+import { drawWestStoplines as drawWestStoplinesExt, drawEastStoplines as drawEastStoplinesExt, drawStoplinesAll as drawAllStoplinesExt } from './overlays/topology.js';
 import { drawSpeedChart as drawSpeedChartExt } from './charts/speedChart.js';
 import { drawGenericMetricChart as drawGenericMetricChartExt } from './charts/genericChart.js';
 import { renderVehicleTrajectories } from './renderers/vehicle.js';
@@ -248,6 +248,10 @@ class GeoVisualization {
         const closeTimelineModal = document.getElementById('closeTimelineModal');
         const timelineModal = document.getElementById('timelineModal');
         
+        // Crossover (A-direction) elements
+        const loadCrossoverBtn = document.getElementById('loadCrossoverBtn');
+        const clearCrossoverBtn = document.getElementById('clearCrossoverBtn');
+        
         // Speed analysis elements
         const analyzeSpeedBtn = document.getElementById('analyzeSpeedBtn');
         const speedModeSelect = document.getElementById('speedMode');
@@ -332,13 +336,29 @@ class GeoVisualization {
         }
 
         // Traffic light query event listeners
-        loadCyclesBtn.addEventListener('click', () => {
-            this.loadAvailableCycles();
-        });
+        if (loadCyclesBtn) {
+            loadCyclesBtn.addEventListener('click', () => {
+                this.loadAvailableCycles();
+            });
+        }
 
-        queryTrafficLightBtn.addEventListener('click', () => {
-            this.queryTrafficLightStatus();
-        });
+        if (queryTrafficLightBtn) {
+            queryTrafficLightBtn.addEventListener('click', () => {
+                this.queryTrafficLightStatus();
+            });
+        }
+
+        // Crossover panel events
+        if (loadCrossoverBtn) {
+            loadCrossoverBtn.addEventListener('click', () => {
+                this.loadCrossoverData();
+            });
+        }
+        if (clearCrossoverBtn) {
+            clearCrossoverBtn.addEventListener('click', () => {
+                this.clearCrossoverData();
+            });
+        }
 
         // Speed analysis event listeners (no date loading button)
 
@@ -381,41 +401,22 @@ class GeoVisualization {
                     const text = document.getElementById('inferenceStatusText');
                     if (status && text) { status.style.display = 'block'; text.textContent = 'Loading overlays...'; }
                     const info = await this.loadIntersectionInferenceOverlays();
-                        // After overlays, also load west and east stoplines for the selected road
-                        try {
-                            const inferRoadSel = document.getElementById('inferRoadId');
-                            const selectedRoadId = inferRoadSel ? (inferRoadSel.value || '') : '';
-                            // West
-                            try {
-                                const urlW = selectedRoadId ? `${this.apiBaseUrl}/stopline/west?road_id=${encodeURIComponent(selectedRoadId)}`
-                                                            : `${this.apiBaseUrl}/stopline/west`;
-                                const respW = await fetch(urlW);
-                                if (respW.ok) {
-                                    const dataW = await respW.json();
-                                    if (dataW && dataW.status === 'success' && dataW.stoplines) {
-                                        drawWestStoplinesExt(this.topologyDataSource, dataW.stoplines);
-                                    }
-                                }
-                            } catch (e) {
-                                console.warn('Failed to load west stoplines on inference load:', e);
+                    // After overlays, also load four-direction stoplines for the selected road (new JSON format)
+                    try {
+                        const inferRoadSel = document.getElementById('inferRoadId');
+                        const selectedRoadId = inferRoadSel ? (inferRoadSel.value || '') : '';
+                        const urlAll = selectedRoadId ? `${this.apiBaseUrl}/stopline/all?road_id=${encodeURIComponent(selectedRoadId)}`
+                                                      : `${this.apiBaseUrl}/stopline/all`;
+                        const respAll = await fetch(urlAll);
+                        if (respAll.ok) {
+                            const dataAll = await respAll.json();
+                            if (dataAll && dataAll.status === 'success' && dataAll.stoplines) {
+                                drawAllStoplinesExt(this.topologyDataSource, dataAll.stoplines);
                             }
-                            // East
-                            try {
-                                const urlE = selectedRoadId ? `${this.apiBaseUrl}/stopline/east?road_id=${encodeURIComponent(selectedRoadId)}`
-                                                            : `${this.apiBaseUrl}/stopline/east`;
-                                const respE = await fetch(urlE);
-                                if (respE.ok) {
-                                    const dataE = await respE.json();
-                                    if (dataE && dataE.status === 'success' && dataE.stoplines) {
-                                        drawEastStoplinesExt(this.topologyDataSource, dataE.stoplines);
-                                    }
-                                }
-                            } catch (e) {
-                                console.warn('Failed to load east stoplines on inference load:', e);
-                            }
-                        } catch (e) {
-                            console.warn('Stopline load wrapper failed:', e);
                         }
+                    } catch (e) {
+                        console.warn('Failed to load stoplines (all directions) on inference load:', e);
+                    }
                     if (status && text) {
                         const roadsMsg = info && typeof info.roadsCount === 'number' ? `${info.roadsCount} road(s)` : 'overlays';
                         const srcMsg = info && info.sourceFile ? ` from ${info.sourceFile}` : '';
@@ -712,7 +713,7 @@ class GeoVisualization {
      * Populate all road selects with the same list
      */
     populateAllRoadSelects(roadIds) {
-        const ids = ['roadId', 'trafficRoadId', 'speedRoadId', 'excludedRoadId', 'topologyRoadId', 'rawRoadId'];
+        const ids = ['roadId', 'trafficRoadId', 'speedRoadId', 'excludedRoadId', 'topologyRoadId', 'rawRoadId', 'crossoverRoadId'];
         ids.forEach(id => {
             const sel = document.getElementById(id);
             if (!sel) return;
@@ -724,6 +725,159 @@ class GeoVisualization {
                 sel.appendChild(opt);
             });
         });
+    }
+
+    /**
+     * Show status for crossover panel
+     */
+    showCrossoverStatus(message, visible = true) {
+        const status = document.getElementById('crossoverStatus');
+        const text = document.getElementById('crossoverStatusText');
+        if (status && text) {
+            text.textContent = message || '';
+            status.style.display = visible ? 'block' : 'none';
+        }
+    }
+
+    /**
+     * Load crossover (A-direction) data and render
+     */
+    async loadCrossoverData() {
+        try {
+            const roadSel = document.getElementById('crossoverRoadId');
+            const roadId = roadSel ? (roadSel.value || 'A0003') : 'A0003';
+            // Collect selected directions (default to both if none)
+            const selected = Array.from(document.querySelectorAll('input[name="crossoverDirection"]:checked')).map(el => el.value);
+            const dirs = (selected && selected.length > 0) ? selected : ['A1-1', 'A1-2'];
+            // Dataset selection
+            const datasetSel = document.getElementById('crossoverDataset');
+            const dataset = datasetSel ? (datasetSel.value || 'standard') : 'standard';
+
+            this.showCrossoverStatus('Loading crossover intervals...', true);
+            // Load intervals first
+            const urlTime = `${this.apiBaseUrl}/crossover/time?road_id=${encodeURIComponent(roadId)}&direction=${encodeURIComponent(dirs.join(','))}&dataset=${encodeURIComponent(dataset)}`;
+            const respTime = await fetch(urlTime);
+            const resTime = await respTime.json();
+            if (!(resTime && resTime.status === 'success')) {
+                throw new Error(resTime && resTime.message ? resTime.message : 'Failed to load crossover intervals');
+            }
+
+            this.showCrossoverStatus('Loading crossover points...', true);
+            const urlData = `${this.apiBaseUrl}/crossover/data?road_id=${encodeURIComponent(roadId)}&direction=${encodeURIComponent(dirs.join(','))}&dataset=${encodeURIComponent(dataset)}`;
+            const respData = await fetch(urlData);
+            const resData = await respData.json();
+            if (!(resData && resData.status === 'success')) {
+                throw new Error(resData && resData.message ? resData.message : 'Failed to load crossover data');
+            }
+
+            // Render points
+            const data = resData.data || [];
+            this.currentVehicleData = data;
+            this.visualizeData(data);
+
+            // Display summary (no detailed listing)
+            this.updateCrossoverIntervals(resTime.intervals || [], roadId, dataset, dirs);
+
+            this.showCrossoverStatus(`Loaded ${data.length} points and ${resTime.total_intervals || 0} interval(s)`, true);
+            setTimeout(()=> this.showCrossoverStatus('', false), 2000);
+        } catch (e) {
+            console.error('Error loading crossover data:', e);
+            this.showCrossoverStatus(`Failed: ${e.message || e}`, true);
+        }
+    }
+
+    /**
+     * Clear crossover visualization and list
+     */
+    clearCrossoverData() {
+        this.clearData();
+        const list = document.getElementById('crossoverIntervals');
+        if (list) {
+            list.innerHTML = `<div class="status-message">Cleared.</div>`;
+        }
+        this.showCrossoverStatus('Cleared', true);
+        setTimeout(()=> this.showCrossoverStatus('', false), 1200);
+    }
+
+    /**
+     * Update crossover intervals UI
+     */
+    updateCrossoverIntervals(intervals, roadId, dataset = 'standard', dirs = []) {
+        const container = document.getElementById('crossoverIntervals');
+        if (!container) return;
+        const total = (intervals && intervals.length) ? intervals.length : 0;
+        if (total === 0) {
+            container.innerHTML = `<div class="status-message">No intervals found.</div>`;
+            return;
+        }
+        // Compute summary stats
+        const vehSet = new Set();
+        const segSet = new Set();
+        let minEnter = null;
+        let maxExit = null;
+        let sumDur = 0;
+        const dirCount = {};
+        intervals.forEach((iv) => {
+            if (iv && typeof iv.vehicle_id !== 'undefined') vehSet.add(iv.vehicle_id);
+            if (iv && typeof iv.seg_id !== 'undefined') segSet.add(iv.seg_id);
+            if (iv && iv.enter_time) {
+                const t = new Date(iv.enter_time);
+                if (!isNaN(t.getTime())) {
+                    if (!minEnter || t < minEnter) minEnter = t;
+                }
+            }
+            if (iv && iv.exit_time) {
+                const t = new Date(iv.exit_time);
+                if (!isNaN(t.getTime())) {
+                    if (!maxExit || t > maxExit) maxExit = t;
+                }
+            }
+            if (iv && typeof iv.duration_s === 'number') sumDur += iv.duration_s;
+            if (iv && iv.direction) {
+                const key = String(iv.direction);
+                dirCount[key] = (dirCount[key] || 0) + 1;
+            }
+        });
+        const vehicleCount = vehSet.size;
+        const segCount = segSet.size;
+        const avgDur = total > 0 ? (sumDur / total) : 0;
+        const minEnterStr = minEnter ? minEnter.toISOString().replace('T', ' ').substring(0, 19) : '--';
+        const maxExitStr = maxExit ? maxExit.toISOString().replace('T', ' ').substring(0, 19) : '--';
+        const dirKeys = Object.keys(dirCount);
+        const dirSummary = dirKeys.length > 0 ? dirKeys.map(k => `${k}:${dirCount[k]}`).join(', ') : (dirs && dirs.length ? dirs.join(', ') : '--');
+        const dsLabel = dataset === 'real' ? 'Real (A1)' : 'Standard';
+        const html = `
+            <div class="timeline-modal-body">
+                <div><strong>${dsLabel}</strong> dataset summary for <strong>${roadId}</strong></div>
+                <div style="margin-top:6px;">
+                    Intervals: <strong>${total}</strong> | Vehicles: <strong>${vehicleCount}</strong> | Segments: <strong>${segCount}</strong><br>
+                    Time Range: <strong>${minEnterStr}</strong> → <strong>${maxExitStr}</strong><br>
+                    Avg Duration: <strong>${avgDur.toFixed(1)} s</strong><br>
+                    Directions: <strong>${dirSummary}</strong>
+                </div>
+            </div>
+        `;
+        container.innerHTML = html;
+    }
+
+    /**
+     * Fly camera to intersection center for the given road
+     */
+    flyToRoadCenter(roadId) {
+        if (!this.viewer) return;
+        try {
+            const centers = this.analysisCenters || {};
+            const c = centers[roadId];
+            if (c && Array.isArray(c)) {
+                const lon = Number(c.lon || c[1] || 0);
+                const lat = Number(c.lat || c[0] || 0);
+                this.viewer.camera.flyTo({
+                    destination: Cesium.Cartesian3.fromDegrees(lon, lat, 1200)
+                });
+            }
+        } catch (e) {
+            // ignore
+        }
     }
 
     /**
